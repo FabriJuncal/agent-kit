@@ -1,0 +1,25 @@
+
+   ReflectionException 
+
+  Class "PrestacionesController" does not exist
+
+  at vendor/laravel/framework/src/Illuminate/Foundation/Console/RouteListCommand.php:223
+    219▕             if ($this->isFrameworkController($route)) {
+    220▕                 return false;
+    221▕             }
+    222▕ 
+  ➜ 223▕             $path = (new ReflectionClass($route->getControllerClass()))
+    224▕                                 ->getFileName();
+    225▕         } else {
+    226▕             return false;
+    227▕         }
+
+      [2m+3 vendor frames [22m
+
+  4   [internal]:0
+      Illuminate\Foundation\Console\RouteListCommand::Illuminate\Foundation\Console\{closure}(Object(Illuminate\Routing\Route))
+      [2m+16 vendor frames [22m
+
+  21  artisan:35
+      Illuminate\Foundation\Console\Kernel::handle(Object(Symfony\Component\Console\Input\ArgvInput), Object(Symfony\Component\Console\Output\ConsoleOutput))
+

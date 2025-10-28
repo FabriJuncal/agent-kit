@@ -1,0 +1,361 @@
+{
+  "generatedAt": "2025-10-27T20:55:06.952Z",
+  "http": {
+    "controllers": [
+      "app/Http/Controllers/ComprobanteController.php",
+      "app/Http/Controllers/Controller.php",
+      "app/Http/Controllers/FileController.php",
+      "app/Http/Controllers/LoginController.php",
+      "app/Http/Controllers/MutualController.php",
+      "app/Http/Controllers/PDFController.php",
+      "app/Http/Controllers/PersonaController.php",
+      "app/Http/Controllers/PrestacionesController.php",
+      "app/Http/Controllers/ProfesionalesController.php",
+      "app/Http/Controllers/TurnosController.php"
+    ],
+    "middleware": [
+      "app/Http/Middleware/Authenticate.php",
+      "app/Http/Middleware/CheckAuth.php",
+      "app/Http/Middleware/CheckLogin.php",
+      "app/Http/Middleware/CheckUser.php",
+      "app/Http/Middleware/EncryptCookies.php",
+      "app/Http/Middleware/PreventRequestsDuringMaintenance.php",
+      "app/Http/Middleware/RedirectIfAuthenticated.php",
+      "app/Http/Middleware/TrimStrings.php",
+      "app/Http/Middleware/TrustHosts.php",
+      "app/Http/Middleware/TrustProxies.php",
+      "app/Http/Middleware/ValidateSignature.php",
+      "app/Http/Middleware/VerifyCsrfToken.php"
+    ],
+    "requests": [],
+    "kernel": {
+      "middleware": [],
+      "middlewareGroups": {
+        "web": [],
+        "api": [
+          ":api"
+        ]
+      },
+      "routeMiddleware": {}
+    }
+  },
+  "types": [
+    {
+      "file": "app/Types/ConceptoItemCompType.php",
+      "kind": "class",
+      "name": "ConceptoItemCompType",
+      "enumCases": []
+    },
+    {
+      "file": "app/Types/EmpresaType.php",
+      "kind": "class",
+      "name": "EmpresaType",
+      "enumCases": []
+    },
+    {
+      "file": "app/Types/EstadoTurnoType.php",
+      "kind": "class",
+      "name": "EstadoTurnoType",
+      "enumCases": []
+    },
+    {
+      "file": "app/Types/TipoComprobType.php",
+      "kind": "class",
+      "name": "TipoComprobType",
+      "enumCases": []
+    },
+    {
+      "file": "app/Types/TipoUsuarioType.php",
+      "kind": "class",
+      "name": "TipoUsuarioType",
+      "enumCases": []
+    }
+  ],
+  "helpers": [
+    {
+      "file": "app/Helpers/FileOptimizer.php",
+      "functions": [
+        "optimizePdf",
+        "optimizeImage",
+        "computeSafeDims",
+        "typeFromMime",
+        "openImageByType",
+        "saveJpeg",
+        "willFitInMemory",
+        "toBytes"
+      ]
+    },
+    {
+      "file": "app/Helpers/Helpers.php",
+      "functions": [
+        "sanitizeString",
+        "sanitizeInt",
+        "normalizeFilesArray",
+        "fileExtension",
+        "realMime",
+        "validateUploadedFile",
+        "sanitizeFilenameBase"
+      ]
+    }
+  ],
+  "views": {
+    "blades": [
+      {
+        "file": "resources/views/itcem/components/loader.blade.php",
+        "name": "itcem.components.loader",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/components/menu.blade.php",
+        "name": "itcem.components.menu",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/components/menuMedico.blade.php",
+        "name": "itcem.components.menuMedico",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/components/messageContainer.blade.php",
+        "name": "itcem.components.messageContainer",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/components/profile.blade.php",
+        "name": "itcem.components.profile",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/components/wait.blade.php",
+        "name": "itcem.components.wait",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/components/waitmini.blade.php",
+        "name": "itcem.components.waitmini",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/comprobantes/modalComprobante.blade.php",
+        "name": "itcem.comprobantes.modalComprobante",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/comprobantes/modalComprobanteImp.blade.php",
+        "name": "itcem.comprobantes.modalComprobanteImp",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/comprobantes/modalComprobanteVisualizar.blade.php",
+        "name": "itcem.comprobantes.modalComprobanteVisualizar",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/layouts/app.blade.php",
+        "name": "itcem.layouts.app",
+        "includes": [
+          "itcem.components.menu",
+          "itcem.components.menuMedico",
+          "itcem.components.loader"
+        ],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/login.blade.php",
+        "name": "itcem.login",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/main.blade.php",
+        "name": "itcem.main",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/passwords/email.blade.php",
+        "name": "itcem.passwords.email",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/passwords/reset.blade.php",
+        "name": "itcem.passwords.reset",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/personas/edit.blade.php",
+        "name": "itcem.personas.edit",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/reports/panelControlTurnos.blade.php",
+        "name": "itcem.reports.panelControlTurnos",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/reports/recepcion.blade.php",
+        "name": "itcem.reports.recepcion",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/reports/recibo.blade.php",
+        "name": "itcem.reports.recibo",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/turnos/create.blade.php",
+        "name": "itcem.turnos.create",
+        "includes": [
+          "itcem.turnos.modalConfirmacion",
+          "itcem.turnos.modalPacientes",
+          "itcem.turnos.modalTurnosPaciente",
+          "itcem.turnos.modalSobreturno",
+          "itcem.components.waitmini",
+          "itcem.components.messageContainer"
+        ],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/turnos/edit.blade.php",
+        "name": "itcem.turnos.edit",
+        "includes": [
+          "itcem.components.waitmini"
+        ],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/turnos/modalAutorizacion.blade.php",
+        "name": "itcem.turnos.modalAutorizacion",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/turnos/modalConfirmacion.blade.php",
+        "name": "itcem.turnos.modalConfirmacion",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/turnos/modalPacientes.blade.php",
+        "name": "itcem.turnos.modalPacientes",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/turnos/modalSobreturno.blade.php",
+        "name": "itcem.turnos.modalSobreturno",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/turnos/modalTurnosPaciente.blade.php",
+        "name": "itcem.turnos.modalTurnosPaciente",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/turnos/recepcion.blade.php",
+        "name": "itcem.turnos.recepcion",
+        "includes": [
+          "itcem.turnos.modalAutorizacion",
+          "itcem.comprobantes.modalComprobante",
+          "itcem.comprobantes.modalComprobanteImp",
+          "itcem.components.wait",
+          "itcem.components.waitmini"
+        ],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/turnos/recepcionMedico.blade.php",
+        "name": "itcem.turnos.recepcionMedico",
+        "includes": [
+          "itcem.consultorios.modalConsultorio",
+          "itcem.components.waitmini"
+        ],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/turnos/reservar.blade.php",
+        "name": "itcem.turnos.reservar",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/turnos/sobreturno.blade.php",
+        "name": "itcem.turnos.sobreturno",
+        "includes": [
+          "itcem.components.wait",
+          "itcem.components.waitmini"
+        ],
+        "components": []
+      },
+      {
+        "file": "resources/views/itcem/turnos/zzzturno.blade.php",
+        "name": "itcem.turnos.zzzturno",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/mails/confirm.blade.php",
+        "name": "mails.confirm",
+        "includes": [],
+        "components": []
+      },
+      {
+        "file": "resources/views/mails/confirm_plain.blade.php",
+        "name": "mails.confirm_plain",
+        "includes": [],
+        "components": []
+      }
+    ],
+    "components": []
+  },
+  "assets": {
+    "js": [
+      "resources/js/app.js",
+      "resources/js/pages/common.js",
+      "resources/js/pages/reportes/panelControlTurnos.js",
+      "resources/js/pages/turnos/create.js",
+      "resources/js/pages/turnos/recepcion.js",
+      "resources/js/pages/turnos/recepcionMedico.js"
+    ],
+    "css": [
+      "resources/css/app.css",
+      "resources/css/common.css"
+    ]
+  },
+  "storage": [
+    {
+      "dir": "storage/app",
+      "files": 2,
+      "approxBytes": 37
+    },
+    {
+      "dir": "storage/framework",
+      "files": 31,
+      "approxBytes": 106087
+    }
+  ],
+  "routesPhpFiles": [
+    "routes/api.php",
+    "routes/channels.php",
+    "routes/console.php",
+    "routes/web.php"
+  ]
+}

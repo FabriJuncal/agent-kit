@@ -1,0 +1,18 @@
+version: 1
+project:
+  name: html
+  root: .
+context:
+  seed:
+    - exports/project_manifest.json
+    - exports/composer_deps.json
+    - exports/npm_deps.json
+    - exports/routes.json
+    - exports/laravel_map.json
+  exclude: ["vendor/**","node_modules/**","storage/logs/**",".git/**"]
+budgets:
+  max_context_tokens: 12000
+  soft_threshold: 9000
+memory:
+  type: file-notes
+  path: agent/notes/AGENT_NOTES.md
