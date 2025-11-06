@@ -1,7 +1,0 @@
-{
-  "signals": {
-    "laravel": true,
-    "angular": false,
-    "vite": "^4.0.0"
-  }
-}
