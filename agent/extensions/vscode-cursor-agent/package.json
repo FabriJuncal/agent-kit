@@ -1,0 +1,115 @@
+{
+  "name": "agent-context-toolkit",
+  "displayName": "Agent Context Toolkit",
+  "description": "Utilidades prácticas para Cursor y VSCode que exponen contexto Selenium, dependencias y automatizaciones del repositorio agent-kit.",
+  "version": "0.0.3",
+  "publisher": "fabrijk",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:agent.context.openQuickPick",
+    "onCommand:agent.dependencies.refresh",
+    "onCommand:agent.configure",
+    "onCommand:agent.doneSound",
+    "onCommand:agent.runBootstrap",
+    "onCommand:agent.runSeleniumExport",
+    "onCommand:agent.runDeptrac",
+    "onView:agentContextView",
+    "onView:agentComposerView",
+    "onView:agentWorkbenchPanel"
+  ],
+  "main": "./extension.js",
+  "scripts": {
+    "lint": "echo \"No hay lint definido\"",
+    "package": "vsce package",
+    "package:darwin-arm64": "vsce package --target darwin-arm64"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "agent.context.openQuickPick",
+        "title": "Agent: Mostrar contextos disponibles"
+      },
+      {
+        "command": "agent.dependencies.refresh",
+        "title": "Agent: Refrescar dependencias Composer"
+      },
+      {
+        "command": "agent.configure",
+        "title": "Agent: Configurar extensión"
+      },
+      {
+        "command": "agent.doneSound",
+        "title": "Agent: Reproducir sonido de finalización"
+      },
+      {
+        "command": "agent.runBootstrap",
+        "title": "Agent: Ejecutar bootstrap.sh"
+      },
+      {
+        "command": "agent.runSeleniumExport",
+        "title": "Agent: Exportar contexto Selenium"
+      },
+      {
+        "command": "agent.runDeptrac",
+        "title": "Agent: Ejecutar análisis Deptrac"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agentWorkbench",
+          "title": "Agent",
+          "icon": "resources/agent.svg"
+        }
+      ]
+    },
+    "views": {
+      "agentWorkbench": [
+        {
+          "type": "webview",
+          "id": "agentWorkbenchPanel",
+          "name": "Panel del agente"
+        }
+      ],
+      "explorer": [
+        {
+          "id": "agentContextView",
+          "name": "Agent Contextos"
+        },
+        {
+          "id": "agentComposerView",
+          "name": "Agent Composer"
+        }
+      ]
+    },
+    "configuration": {
+      "type": "object",
+      "title": "Agent Toolkit",
+      "properties": {
+        "agentToolkit.soundFile": {
+          "type": "string",
+          "default": "",
+          "description": "Ruta al archivo de sonido personalizado. Usa ~ para el home. Vacío en macOS usa Glass.aiff."
+        },
+        "agentToolkit.soundMessage": {
+          "type": "string",
+          "default": "🔔 El agente terminó su trabajo",
+          "description": "Mensaje a mostrar cuando el sonido de finalización se dispara."
+        },
+        "agentToolkit.workspaceRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Si trabajas fuera del repositorio raíz, indica la ruta base para localizar los archivos exportados."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^2.24.0"
+  }
+}
