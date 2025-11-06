@@ -10,6 +10,8 @@ const routesBE  = read(`${outDir}/routes.json`);
 const routesTxt = fs.existsSync(`${outDir}/routes.txt`) ? true : false;
 const routesFE  = read(`${outDir}/fe_routes.json`);
 const lmap      = read(`${outDir}/laravel_map.json`);
+const seleniumCtxPath = `${outDir}/selenium_test_context.md`;
+const hasSeleniumCtx = fs.existsSync(seleniumCtxPath);
 
 // 1) Generar seeds compactos
 const seeds = [];
@@ -19,7 +21,8 @@ if (npm)      seeds.push('exports/npm_deps.json');
 if (routesBE) seeds.push('exports/routes.json');
 else if (routesTxt) seeds.push('exports/routes.txt');
 if (routesFE) seeds.push('exports/fe_routes.json');
-if (lmap)     seeds.push('exports/laravel_map.json');   // <— NUEVO
+if (lmap)     seeds.push('exports/laravel_map.json');
+if (hasSeleniumCtx) seeds.push('exports/selenium_test_context.md');
 
 // 2) Escribir config.yaml mínimo
 const yaml = `version: 1
@@ -49,13 +52,15 @@ Agente para ${stackHints.join(' + ') || 'monorepo'} con foco en eficiencia de to
 
 # <objectives>
 - Detectar problemas y proponer mejoras con evidencia.
-- Usar exports compactos como mapa y abrir archivos puntuales.
+- Aprovechar los exports (incluyendo _selenium_test_context_) para mapear flujos críticos.
+- Preparar y automatizar pruebas Selenium ordenadas cuando corresponda.
 
 # <context-seeds>
-- project_manifest, composer/npm deps, routes, laravel_map (http/views/types/helpers/assets/storage).
+- project_manifest, composer/npm deps, routes, laravel_map (http/views/types/helpers/assets/storage), selenium_test_context.
 
 # <outputs>
 - Pasos accionables + diffs + riesgos + rollback.
+- Si se requieren pruebas end-to-end: enumerar casos de uso, generar Page Objects y tests Selenium (Python + pytest) con código limpio.
 `;
 fs.writeFileSync('agent/system_prompt.md', prompt);
 

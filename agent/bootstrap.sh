@@ -22,6 +22,7 @@ if jq -e '.angular == true' <<<"$SIG" >/dev/null; then
   node agent/scripts/scan_routes_ts.mjs || true
 fi
 
+node agent/scripts/export_selenium_context.mjs || true
 node agent/scripts/synthesize.mjs
 node agent/scripts/checklist.mjs
 echo "✅ Onboarding completo. Revisa agent/config.yaml y agent/system_prompt.md"
