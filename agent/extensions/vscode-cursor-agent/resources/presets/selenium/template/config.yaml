@@ -1,0 +1,15 @@
+version: 1
+project:
+  name: agent-kit
+  root: .
+context:
+  seed:
+    - exports/project_manifest.json
+    - exports/selenium_test_context.md
+  exclude: ["vendor/**","node_modules/**","storage/logs/**",".git/**"]
+budgets:
+  max_context_tokens: 12000
+  soft_threshold: 9000
+memory:
+  type: file-notes
+  path: agent/notes/AGENT_NOTES.md

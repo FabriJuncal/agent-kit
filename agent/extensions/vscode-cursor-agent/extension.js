@@ -1,134 +1,233 @@
 const vscode = require('vscode');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const fsp = fs.promises;
 const path = require('path');
 const os = require('os');
 
-const CONTEXT_FILES = [
-  {
-    label: '📄 Selenium Test Context',
-    description: 'Resumen generado por bootstrap',
-    relativePath: path.join('agent', 'exports', 'selenium_test_context.md')
-  },
-  {
-    label: '📝 Notas Selenium Agent',
-    description: 'Checklist operativo',
-    relativePath: path.join('agent', 'notes', 'selenium-agent.md')
-  },
-  {
-    label: '📚 Documentación General',
-    description: 'Punto de partida del repositorio',
-    relativePath: 'DOCUMENTACION.md'
+const PRESETS_ROOT = 'resources/presets';
+
+class PresetManager {
+  constructor(context, workspaceRoot) {
+    this.context = context;
+    this.extensionPath = context.extensionPath;
+    this.workspaceRoot = workspaceRoot;
+    this.presets = this.loadPresets();
+    this.currentPreset = undefined;
+    this._onDidChangePreset = new vscode.EventEmitter();
+    this.onDidChangePreset = this._onDidChangePreset.event;
+    this.setWorkspaceRoot(workspaceRoot);
   }
-];
 
-const COMPOSER_DATA_FILE = path.join('agent', 'exports', 'composer_deps.json');
-const DEPTRAC_FILE = path.join('agent', 'exports', 'deptrac_layers.json');
-const SNIPPET_SOURCE_FILE = path.join('agent', 'scripts', 'export_selenium_context.mjs');
-const BOOTSTRAP_SCRIPT = path.join('agent', 'bootstrap.sh');
-
-const SOUND_TRIGGER_RELATIVE_PATHS = new Set([
-  ...CONTEXT_FILES.map((meta) => meta.relativePath),
-  COMPOSER_DATA_FILE,
-  DEPTRAC_FILE,
-  SNIPPET_SOURCE_FILE
-]);
-
-const DEFAULT_SNIPPETS = [
-  {
-    label: 'selenium:page-object',
-    detail: 'Plantilla Page Object',
-    language: 'javascript',
-    insertText: [
-      "import { By } from 'selenium-webdriver';",
-      '',
-      'export class ${1:PageName}Page {',
-      '  constructor(driver) {',
-      '    this.driver = driver;',
-      '  }',
-      '',
-      '  async goto() {',
-      "    await this.driver.get('${2:/ruta}');",
-      '  }',
-      '',
-      '  async ${3:submitForm}(data) {',
-      "    await this.driver.findElement(By.css('${4:#selector}')).sendKeys(data);",
-      '    await this.driver.findElement(By.css(\'button[type=\"submit\"]\')).click();',
-      '  }',
-      '}'
-    ].join('\n')
-  },
-  {
-    label: 'selenium:test-case',
-    detail: 'Test Jest/Mocha básico',
-    language: 'typescript',
-    insertText: [
-      "import { Builder } from 'selenium-webdriver';",
-      '',
-      "describe('${1:Feature}', () => {",
-      '  let driver;',
-      '',
-      '  beforeAll(async () => {',
-      "    driver = await new Builder().forBrowser('chrome').build();",
-      '  }, 30000);',
-      '',
-      '  afterAll(async () => {',
-      '    if (driver) {',
-      '      await driver.quit();',
-      '    }',
-      '  });',
-      '',
-      "  it('debería ${2:realizar la acción}', async () => {",
-      '    // TODO: usa Page Objects del contexto',
-      '  });',
-      '});'
-    ].join('\n')
-  },
-  {
-    label: 'selenium:php-test',
-    detail: 'Test PHP PHPUnit',
-    language: 'php',
-    insertText: [
-      '<?php',
-      'use Facebook\\WebDriver\\Remote\\RemoteWebDriver;',
-      '',
-      'class ${1:LoginTest} extends TestCase',
-      '{',
-      '    /** @var RemoteWebDriver */',
-      '    private $driver;',
-      '',
-      '    protected function setUp(): void',
-      '    {',
-      "        $this->driver = RemoteWebDriver::create('${2:http://localhost:4444/wd/hub}', DesiredCapabilities::chrome());",
-      '    }',
-      '',
-      '    protected function tearDown(): void',
-      '    {',
-      '        $this->driver->quit();',
-      '    }',
-      '',
-      '    public function test${3:LoginCorrecto}(): void',
-      '    {',
-      "        $this->driver->get('${4:/ruta}');",
-      '    }',
-      '}'
-    ].join('\n')
+  dispose() {
+    this._onDidChangePreset.dispose();
   }
-];
+
+  loadPresets() {
+    const presetsDir = path.join(this.extensionPath, PRESETS_ROOT);
+    if (!fs.existsSync(presetsDir)) {
+      return [];
+    }
+
+    const entries = fs.readdirSync(presetsDir, { withFileTypes: true });
+    const presets = [];
+
+    entries.forEach((entry) => {
+      if (!entry.isDirectory()) {
+        return;
+      }
+
+      const presetRoot = path.join(presetsDir, entry.name);
+      const manifestPath = path.join(presetRoot, 'manifest.json');
+
+      if (!fs.existsSync(manifestPath)) {
+        return;
+      }
+
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        const templateDir = manifest.templateDir || '.';
+        const contextFiles = manifest.contextFiles || [];
+        const explicitWatchFiles = manifest.watchFiles || [];
+        const watchFiles = Array.from(
+          new Set([
+            ...explicitWatchFiles,
+            ...contextFiles.map((entry) => entry.relativePath).filter(Boolean)
+          ])
+        );
+
+        presets.push({
+          ...manifest,
+          rootPath: presetRoot,
+          templatePath: path.join(presetRoot, templateDir),
+          contextFiles,
+          watchFiles,
+          tasks: manifest.tasks || [],
+          commands: manifest.commands || {},
+          data: manifest.data || {},
+          defaultSnippets: manifest.defaultSnippets || []
+        });
+      } catch (error) {
+        console.warn(`No se pudo cargar el manifest del preset ${entry.name}: ${error.message}`);
+      }
+    });
+
+    return presets.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  setWorkspaceRoot(workspaceRoot) {
+    this.workspaceRoot = workspaceRoot;
+    const resolved = this.resolvePreset();
+    this.updateCurrentPreset(resolved);
+  }
+
+  async selectPreset(id) {
+    const configuration = vscode.workspace.getConfiguration('agentToolkit');
+    await configuration.update('preset', id || '', true);
+    this.updateCurrentPreset(this.findPresetById(id) || this.detectPreset() || this.getDefaultPreset());
+  }
+
+  updateCurrentPreset(preset) {
+    const nextPreset = preset || this.getDefaultPreset();
+    const changed = !this.currentPreset || !nextPreset || this.currentPreset.id !== nextPreset.id;
+    this.currentPreset = nextPreset;
+    if (changed) {
+      this._onDidChangePreset.fire(this.currentPreset);
+    }
+  }
+
+  resolvePreset() {
+    const configuration = vscode.workspace.getConfiguration('agentToolkit');
+    const configuredId = configuration.get('preset');
+    if (configuredId) {
+      const preset = this.findPresetById(configuredId);
+      if (preset) {
+        return preset;
+      }
+    }
+    return this.detectPreset() || this.getDefaultPreset();
+  }
+
+  detectPreset() {
+    if (!this.workspaceRoot) {
+      return undefined;
+    }
+
+    return this.presets.find((preset) => this.matchesWorkspace(preset, this.workspaceRoot));
+  }
+
+  matchesWorkspace(preset, workspaceRoot) {
+    const detection = preset.detection || {};
+    const requiredFiles = detection.requiredFiles || [];
+
+    return requiredFiles.every((relativePath) => {
+      const target = path.join(workspaceRoot, relativePath);
+      return fs.existsSync(target);
+    });
+  }
+
+  findPresetById(id) {
+    if (!id) {
+      return undefined;
+    }
+    return this.presets.find((preset) => preset.id === id);
+  }
+
+  getDefaultPreset() {
+    return this.presets[0];
+  }
+
+  getPreset() {
+    return this.currentPreset || this.getDefaultPreset();
+  }
+
+  getPresetSummary() {
+    const preset = this.getPreset();
+    return preset
+      ? { id: preset.id, name: preset.name, description: preset.description || '' }
+      : undefined;
+  }
+
+  getContextFiles() {
+    const preset = this.getPreset();
+    return preset ? preset.contextFiles : [];
+  }
+
+  getWatchFiles() {
+    const preset = this.getPreset();
+    return preset ? preset.watchFiles : [];
+  }
+
+  getTasks() {
+    const preset = this.getPreset();
+    return preset ? preset.tasks : [];
+  }
+
+  getCommandDefinition(commandId) {
+    const preset = this.getPreset();
+    if (!preset || !preset.commands) {
+      return undefined;
+    }
+    return preset.commands[commandId];
+  }
+
+  getData(pathKey) {
+    const preset = this.getPreset();
+    return preset && preset.data ? preset.data[pathKey] : undefined;
+  }
+
+  getBootstrapScript() {
+    return this.getData('bootstrapScript');
+  }
+
+  getComposerDataFile() {
+    return this.getData('composerData');
+  }
+
+  getDeptracFile() {
+    return this.getData('deptracFile');
+  }
+
+  getSnippetSourceFile() {
+    return this.getData('snippetSource');
+  }
+
+  getDefaultSnippets() {
+    const preset = this.getPreset();
+    return preset ? preset.defaultSnippets : [];
+  }
+
+  getTemplatePath(id) {
+    const preset = this.findPresetById(id);
+    return preset ? preset.templatePath : undefined;
+  }
+
+  getPresetChoices() {
+    return this.presets.map((preset) => ({
+      id: preset.id,
+      label: preset.name,
+      description: preset.description,
+      detail: preset.id
+    }));
+  }
+}
 
 let agentTerminal;
 
 function activate(context) {
   let currentWorkspaceRoot = resolveWorkspaceRoot();
 
-  const contextProvider = new AgentContextProvider(currentWorkspaceRoot);
-  const composerProvider = new ComposerTreeProvider(currentWorkspaceRoot);
-  const snippetProvider = registerSnippets(context, currentWorkspaceRoot);
-  const deptracDiagnostics = new DeptracDiagnostics(currentWorkspaceRoot);
-  const workbenchProvider = new AgentWorkbenchViewProvider(context, currentWorkspaceRoot);
+  const presetManager = new PresetManager(context, currentWorkspaceRoot);
+
+  const contextProvider = new AgentContextProvider(currentWorkspaceRoot, presetManager);
+  const composerProvider = new ComposerTreeProvider(currentWorkspaceRoot, presetManager);
+  const snippetProvider = registerSnippets(context, currentWorkspaceRoot, presetManager);
+  const deptracDiagnostics = new DeptracDiagnostics(currentWorkspaceRoot, presetManager);
+  const workbenchProvider = new AgentWorkbenchViewProvider(context, currentWorkspaceRoot, presetManager);
 
   const updateWorkspaceRoot = (newRoot) => {
     currentWorkspaceRoot = newRoot;
+    presetManager.setWorkspaceRoot(newRoot);
     contextProvider.setWorkspaceRoot(newRoot);
     composerProvider.setWorkspaceRoot(newRoot);
     snippetProvider.setWorkspaceRoot(newRoot);
@@ -137,6 +236,7 @@ function activate(context) {
   };
 
   context.subscriptions.push(
+    presetManager,
     contextProvider,
     composerProvider,
     deptracDiagnostics,
@@ -149,17 +249,46 @@ function activate(context) {
       composerProvider.refresh();
       workbenchProvider.postState();
     }),
-    vscode.commands.registerCommand('agent.configure', () => openConfigurationUI(context)),
-    vscode.commands.registerCommand('agent.runBootstrap', () => runBootstrapScript(currentWorkspaceRoot, workbenchProvider)),
-    vscode.commands.registerCommand('agent.runSeleniumExport', () => {
-      runSeleniumExport(currentWorkspaceRoot, workbenchProvider);
-      snippetProvider.invalidate();
-    }),
-    vscode.commands.registerCommand('agent.runDeptrac', () => runDeptracScript(currentWorkspaceRoot, workbenchProvider)),
+    vscode.commands.registerCommand('agent.configure', () => openConfigurationUI(context, presetManager, workbenchProvider)),
+    vscode.commands.registerCommand('agent.runBootstrap', () =>
+      runPresetCommand('agent.runBootstrap', currentWorkspaceRoot, presetManager, {
+        workbenchProvider,
+        snippetProvider
+      })
+    ),
+    vscode.commands.registerCommand('agent.runSeleniumExport', () =>
+      runPresetCommand('agent.runSeleniumExport', currentWorkspaceRoot, presetManager, {
+        workbenchProvider,
+        snippetProvider
+      })
+    ),
+    vscode.commands.registerCommand('agent.runDeptrac', () =>
+      runPresetCommand('agent.runDeptrac', currentWorkspaceRoot, presetManager, {
+        workbenchProvider,
+        snippetProvider
+      })
+    ),
+    vscode.commands.registerCommand('agent.scaffoldAgent', () =>
+      scaffoldAgentDirectory(context, currentWorkspaceRoot, presetManager, {
+        workbenchProvider,
+        contextProvider,
+        composerProvider,
+        snippetProvider,
+        deptracDiagnostics
+      })
+    ),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('agentToolkit.workspaceRoot')) {
         const newRoot = resolveWorkspaceRoot();
         updateWorkspaceRoot(newRoot);
+      }
+      if (event.affectsConfiguration('agentToolkit.preset')) {
+        const configuredPreset = vscode.workspace.getConfiguration('agentToolkit').get('preset') || '';
+        const currentPreset = presetManager.getPresetSummary();
+        const currentId = currentPreset ? currentPreset.id : '';
+        if (configuredPreset !== currentId) {
+          void presetManager.selectPreset(configuredPreset);
+        }
       }
       if (event.affectsConfiguration('agentToolkit.soundFile') || event.affectsConfiguration('agentToolkit.soundMessage')) {
         clearSoundConfigCache();
@@ -194,22 +323,35 @@ function resolveWorkspaceRoot() {
 }
 
 class AgentContextProvider {
-  constructor(workspaceRoot) {
+  constructor(workspaceRoot, presetManager) {
+    this.presetManager = presetManager;
     this._onDidChangeTreeData = new vscode.EventEmitter();
     this.onDidChangeTreeData = this._onDidChangeTreeData.event;
+    this.watchers = [];
+    this.presetSubscription = this.presetManager.onDidChangePreset(() => this.handlePresetChanged());
     this.setWorkspaceRoot(workspaceRoot);
   }
 
   dispose() {
     this.disposeWatchers();
+    if (this.presetSubscription) {
+      this.presetSubscription.dispose();
+    }
     this._onDidChangeTreeData.dispose();
   }
 
   setWorkspaceRoot(root) {
     this.workspaceRoot = root;
-    this.disposeWatchers();
-    this.watchers = CONTEXT_FILES.map(({ relativePath }) => watchFile(this.resolvePath(relativePath), () => this.refresh()));
+    this.resetWatchers();
     this.refresh();
+  }
+
+  resetWatchers() {
+    this.disposeWatchers();
+    const contextFiles = this.presetManager.getContextFiles();
+    this.watchers = contextFiles
+      .map(({ relativePath }) => watchFile(this.resolvePath(relativePath), () => this.refresh()))
+      .filter(Boolean);
   }
 
   refresh() {
@@ -231,15 +373,15 @@ class AgentContextProvider {
       return Promise.resolve(element.children || []);
     }
 
-    const items = CONTEXT_FILES.map((fileMeta) => this.createTreeItem(fileMeta)).filter(Boolean);
-
-    if (items.length === 0) {
-      return Promise.resolve([
-        createInfoItem('Ejecuta ./agent/bootstrap.sh para generar los contextos.', 'info')
-      ]);
+    const contextFiles = this.presetManager.getContextFiles();
+    if (!contextFiles.length) {
+      return Promise.resolve([createInfoItem('Este preset no define contextos automáticos.', 'info')]);
     }
 
-    return Promise.resolve(items);
+    const items = contextFiles.map((fileMeta) => this.createTreeItem(fileMeta)).filter(Boolean);
+    return Promise.resolve(
+      items.length ? items : [createInfoItem('Genera los archivos de contexto desde el bootstrap.', 'info')]
+    );
   }
 
   createTreeItem({ label, description, relativePath }) {
@@ -272,23 +414,35 @@ class AgentContextProvider {
   }
 
   openQuickPick() {
-    const options = CONTEXT_FILES.map((meta) => {
+    const contextFiles = this.presetManager.getContextFiles();
+    if (!contextFiles.length) {
+      vscode.window.showInformationMessage('El preset activo no define contextos automáticos.');
+      return;
+    }
+
+    const options = contextFiles.map((meta) => {
       const absolute = this.resolvePath(meta.relativePath);
       const exists = fs.existsSync(absolute);
       return {
         label: meta.label,
         description: exists ? meta.description : 'Archivo pendiente de generar',
-        absolute
+        absolute,
+        exists
       };
     });
 
-    vscode.window.showQuickPick(options, { placeHolder: 'Selecciona un contexto para abrir' }).then((picked) => {
-      if (picked && fs.existsSync(picked.absolute)) {
+    vscode.window
+      .showQuickPick(options, { placeHolder: 'Selecciona un contexto para abrir' })
+      .then((picked) => {
+        if (!picked) {
+          return;
+        }
+        if (!picked.exists) {
+          vscode.window.showWarningMessage('El archivo aún no existe. Ejecuta los scripts del agente.');
+          return;
+        }
         vscode.workspace.openTextDocument(picked.absolute).then((doc) => vscode.window.showTextDocument(doc));
-      } else if (picked) {
-        vscode.window.showWarningMessage('El archivo aún no existe. Ejecuta los scripts del agente.');
-      }
-    });
+      });
   }
 
   disposeWatchers() {
@@ -297,25 +451,43 @@ class AgentContextProvider {
     }
     this.watchers = [];
   }
+
+  handlePresetChanged() {
+    this.resetWatchers();
+    this.refresh();
+  }
 }
 
 class ComposerTreeProvider {
-  constructor(workspaceRoot) {
+  constructor(workspaceRoot, presetManager) {
+    this.presetManager = presetManager;
     this._onDidChangeTreeData = new vscode.EventEmitter();
     this.onDidChangeTreeData = this._onDidChangeTreeData.event;
+    this.presetSubscription = this.presetManager.onDidChangePreset(() => this.handlePresetChanged());
     this.setWorkspaceRoot(workspaceRoot);
   }
 
   dispose() {
     this.disposeWatcher();
+    if (this.presetSubscription) {
+      this.presetSubscription.dispose();
+    }
     this._onDidChangeTreeData.dispose();
   }
 
   setWorkspaceRoot(root) {
     this.workspaceRoot = root;
-    this.disposeWatcher();
-    this.watcher = watchFile(this.getTargetPath(), () => this.refresh());
+    this.resetWatcher();
     this.refresh();
+  }
+
+  resetWatcher() {
+    this.disposeWatcher();
+    const targetPath = this.getTargetPath();
+    if (!targetPath) {
+      return;
+    }
+    this.watcher = watchFile(targetPath, () => this.refresh());
   }
 
   refresh() {
@@ -337,8 +509,12 @@ class ComposerTreeProvider {
     }
 
     const target = this.getTargetPath();
+    if (!target) {
+      return [createInfoItem('El preset activo no define dependencias Composer.', 'info')];
+    }
+
     if (!fs.existsSync(target)) {
-      return [createInfoItem('Genera agent/exports/composer_deps.json para ver dependencias.', 'info')];
+      return [createInfoItem(`${target} pendiente de generar.`, 'info')];
     }
 
     if (!this.cachedTree) {
@@ -349,10 +525,16 @@ class ComposerTreeProvider {
   }
 
   getTargetPath() {
-    if (!this.workspaceRoot) {
-      return COMPOSER_DATA_FILE;
+    const relative = this.presetManager.getComposerDataFile();
+    if (!relative) {
+      return undefined;
     }
-    return path.join(this.workspaceRoot, COMPOSER_DATA_FILE);
+
+    if (!this.workspaceRoot) {
+      return path.isAbsolute(relative) ? relative : path.join('.', relative);
+    }
+
+    return path.isAbsolute(relative) ? relative : path.join(this.workspaceRoot, relative);
   }
 
   disposeWatcher() {
@@ -360,6 +542,11 @@ class ComposerTreeProvider {
       this.watcher.close();
     }
     this.watcher = undefined;
+  }
+
+  handlePresetChanged() {
+    this.resetWatcher();
+    this.refresh();
   }
 }
 
@@ -432,8 +619,8 @@ function createInfoItem(text, severity = 'info') {
   return item;
 }
 
-function registerSnippets(context, workspaceRoot) {
-  const provider = new SeleniumCompletionProvider(workspaceRoot);
+function registerSnippets(context, workspaceRoot, presetManager) {
+  const provider = new PresetCompletionProvider(workspaceRoot, presetManager);
   const selector = [
     { language: 'javascript', scheme: 'file' },
     { language: 'typescript', scheme: 'file' },
@@ -452,26 +639,41 @@ function registerSnippets(context, workspaceRoot) {
   return provider;
 }
 
-class SeleniumCompletionProvider {
-  constructor(workspaceRoot) {
+class PresetCompletionProvider {
+  constructor(workspaceRoot, presetManager) {
     this.workspaceRoot = workspaceRoot;
+    this.presetManager = presetManager;
     this.cache = null;
-    this.watcher = watchFile(this.getSnippetPath(), () => this.invalidate());
+    this.watcher = undefined;
+    this.presetSubscription = this.presetManager.onDidChangePreset(() => this.handlePresetChanged());
+    this.resetWatcher();
   }
 
   dispose() {
     if (this.watcher && this.watcher.close) {
       this.watcher.close();
     }
+    if (this.presetSubscription) {
+      this.presetSubscription.dispose();
+    }
   }
 
   setWorkspaceRoot(root) {
     this.workspaceRoot = root;
+    this.resetWatcher();
+    this.invalidate();
+  }
+
+  resetWatcher() {
     if (this.watcher && this.watcher.close) {
       this.watcher.close();
     }
-    this.watcher = watchFile(this.getSnippetPath(), () => this.invalidate());
-    this.invalidate();
+    const snippetPath = this.getSnippetPath();
+    if (snippetPath) {
+      this.watcher = watchFile(snippetPath, () => this.invalidate());
+    } else {
+      this.watcher = undefined;
+    }
   }
 
   invalidate() {
@@ -479,10 +681,16 @@ class SeleniumCompletionProvider {
   }
 
   getSnippetPath() {
-    if (!this.workspaceRoot) {
-      return SNIPPET_SOURCE_FILE;
+    const relative = this.presetManager.getSnippetSourceFile();
+    if (!relative) {
+      return undefined;
     }
-    return path.join(this.workspaceRoot, SNIPPET_SOURCE_FILE);
+
+    if (!this.workspaceRoot) {
+      return path.isAbsolute(relative) ? relative : path.join('.', relative);
+    }
+
+    return path.isAbsolute(relative) ? relative : path.join(this.workspaceRoot, relative);
   }
 
   provideCompletionItems() {
@@ -503,7 +711,7 @@ class SeleniumCompletionProvider {
     const filePath = this.getSnippetPath();
     let snippets = [];
 
-    if (fs.existsSync(filePath)) {
+    if (filePath && fs.existsSync(filePath)) {
       try {
         const raw = fs.readFileSync(filePath, 'utf-8');
         snippets = extractAnnotatedSnippets(raw);
@@ -513,11 +721,16 @@ class SeleniumCompletionProvider {
     }
 
     if (snippets.length === 0) {
-      snippets = DEFAULT_SNIPPETS;
+      snippets = this.presetManager.getDefaultSnippets();
     }
 
     this.cache = snippets;
     return snippets;
+  }
+
+  handlePresetChanged() {
+    this.resetWatcher();
+    this.invalidate();
   }
 }
 
@@ -664,17 +877,25 @@ class DeptracDiagnostics {
 }
 
 class AgentWorkbenchViewProvider {
-  constructor(context, workspaceRoot) {
+  constructor(context, workspaceRoot, presetManager) {
     this.context = context;
     this.extensionUri = context.extensionUri;
     this.extensionPath = context.extensionPath;
     this.workspaceRoot = workspaceRoot;
+    this.presetManager = presetManager;
     this.watchers = [];
     this.soundTimeout = undefined;
+    this.presetSubscription = this.presetManager.onDidChangePreset(() => {
+      this.resetWatchers();
+      this.postState();
+    });
   }
 
   dispose() {
     this.disposeWatchers();
+    if (this.presetSubscription) {
+      this.presetSubscription.dispose();
+    }
   }
 
   setWorkspaceRoot(root) {
@@ -712,15 +933,9 @@ class AgentWorkbenchViewProvider {
       return;
     }
 
-    const targets = new Set([
-      BOOTSTRAP_SCRIPT,
-      ...CONTEXT_FILES.map((meta) => meta.relativePath),
-      COMPOSER_DATA_FILE,
-      DEPTRAC_FILE,
-      SNIPPET_SOURCE_FILE
-    ]);
+    const watchTargets = new Set(this.presetManager.getWatchFiles());
 
-    targets.forEach((relativePath) => {
+    watchTargets.forEach((relativePath) => {
       const watcher = watchFile(this.resolveWorkspacePath(relativePath), () => this.handleWatchedFile(relativePath));
       if (watcher) {
         this.watchers.push(watcher);
@@ -746,9 +961,6 @@ class AgentWorkbenchViewProvider {
 
   handleWatchedFile(relativePath) {
     this.postState();
-    if (!relativePath || !SOUND_TRIGGER_RELATIVE_PATHS.has(relativePath)) {
-      return;
-    }
     this.scheduleDoneSound();
   }
 
@@ -773,30 +985,101 @@ class AgentWorkbenchViewProvider {
   buildState() {
     const root = this.workspaceRoot;
     const hasWorkspace = Boolean(root);
-    const bootstrapScriptPath = this.resolveWorkspacePath(BOOTSTRAP_SCRIPT);
-    const snippetSourcePath = this.resolveWorkspacePath(SNIPPET_SOURCE_FILE);
-
     const soundInfo = this.getSoundInfo();
 
-    const state = {
+    const presetSummary = this.presetManager.getPresetSummary();
+    const statuses = [];
+
+    statuses.push({
+      id: 'workspace',
+      label: 'Workspace',
+      ok: hasWorkspace,
+      okText: hasWorkspace ? (presetSummary ? presetSummary.name : 'Configurado') : 'Configurado',
+      failText: 'No configurado',
+      detail: hasWorkspace ? root : ''
+    });
+
+    const contextFiles = this.presetManager.getContextFiles();
+    contextFiles.forEach((context) => {
+      const exists = hasWorkspace && fs.existsSync(this.resolveWorkspacePath(context.relativePath));
+      statuses.push({
+        id: `context:${context.relativePath}`,
+        label: context.label,
+        ok: exists,
+        okText: 'Disponible',
+        failText: 'Pendiente'
+      });
+    });
+
+    const bootstrapScript = this.presetManager.getBootstrapScript();
+    if (bootstrapScript) {
+      statuses.push({
+        id: 'bootstrap',
+        label: path.basename(bootstrapScript),
+        ok: hasWorkspace && fs.existsSync(this.resolveWorkspacePath(bootstrapScript)),
+        okText: 'Disponible',
+        failText: 'Pendiente'
+      });
+    }
+
+    const composerData = this.presetManager.getComposerDataFile();
+    if (composerData) {
+      statuses.push({
+        id: 'composer',
+        label: 'Dependencias',
+        ok: hasWorkspace && fs.existsSync(this.resolveWorkspacePath(composerData)),
+        okText: 'Listas',
+        failText: 'Pendientes'
+      });
+    }
+
+    const deptracFile = this.presetManager.getDeptracFile();
+    if (deptracFile) {
+      statuses.push({
+        id: 'deptrac',
+        label: 'Deptrac',
+        ok: hasWorkspace && fs.existsSync(this.resolveWorkspacePath(deptracFile)),
+        okText: 'Listo',
+        failText: 'Pendiente'
+      });
+    }
+
+    const snippetSource = this.presetManager.getSnippetSourceFile();
+    if (snippetSource) {
+      statuses.push({
+        id: 'snippets',
+        label: 'Snippets',
+        ok: hasWorkspace && fs.existsSync(this.resolveWorkspacePath(snippetSource)),
+        okText: 'Listos',
+        failText: 'Pendiente'
+      });
+    }
+
+    statuses.push({
+      id: 'sound',
+      label: 'Sonido',
+      ok: soundInfo.ready,
+      okText: soundInfo.label,
+      failText: soundInfo.label
+    });
+
+    const actions = this.buildActions({
+      hasWorkspace,
+      contextCount: contextFiles.length,
+      bootstrapScript,
+      composerData,
+      snippetSource
+    });
+
+    return {
       hasWorkspace,
       workspaceRoot: root || '',
-      hasBootstrapScript: hasWorkspace && fs.existsSync(bootstrapScriptPath),
-      hasSeleniumContext:
-        hasWorkspace &&
-        fs.existsSync(this.resolveWorkspacePath(path.join('agent', 'exports', 'selenium_test_context.md'))),
-      hasSeleniumNotes:
-        hasWorkspace && fs.existsSync(this.resolveWorkspacePath(path.join('agent', 'notes', 'selenium-agent.md'))),
-      hasComposerData: hasWorkspace && fs.existsSync(this.resolveWorkspacePath(COMPOSER_DATA_FILE)),
-      hasDeptracData: hasWorkspace && fs.existsSync(this.resolveWorkspacePath(DEPTRAC_FILE)),
-      snippetSourceExists: hasWorkspace && fs.existsSync(snippetSourcePath),
-      snippetSource: SNIPPET_SOURCE_FILE,
-      bootstrapScript: BOOTSTRAP_SCRIPT,
+      preset: presetSummary,
+      statuses,
+      actions,
       soundSummary: soundInfo.label,
       soundReady: soundInfo.ready
     };
-
-    return state;
   }
 
   getSoundInfo() {
@@ -814,24 +1097,62 @@ class AgentWorkbenchViewProvider {
     }
   }
 
+  buildActions({ hasWorkspace, contextCount, bootstrapScript, composerData, snippetSource }) {
+    const actions = [];
+    const seen = new Set();
+
+    const pushAction = (action) => {
+      if (!action || !action.command || seen.has(action.command)) {
+        return;
+      }
+      seen.add(action.command);
+      actions.push(action);
+    };
+
+    const presetTasks = this.presetManager.getTasks();
+    presetTasks.forEach((task) =>
+      pushAction({
+        command: task.command,
+        label: task.label,
+        primary: Boolean(task.primary)
+      })
+    );
+
+    pushAction({ command: 'agent.scaffoldAgent', label: 'Crear estructura agent/' });
+    pushAction({ command: 'choosePreset', label: 'Seleccionar preset…' });
+
+    if (hasWorkspace && contextCount > 0) {
+      pushAction({ command: 'openContexts', label: 'Abrir contextos' });
+    }
+
+    if (composerData) {
+      pushAction({ command: 'openComposer', label: 'Abrir dependencias' });
+    }
+
+    if (snippetSource) {
+      pushAction({ command: 'openSnippets', label: 'Editar snippets' });
+    }
+
+    if (bootstrapScript) {
+      pushAction({ command: 'openBootstrapFile', label: 'Abrir bootstrap' });
+    }
+
+    pushAction({ command: 'openConfigurator', label: 'Configurar extensión…' });
+    pushAction({ command: 'openDocs', label: 'Ver documentación' });
+    pushAction({ command: 'openConfig', label: 'Editar config.json' });
+    pushAction({ command: 'playSound', label: 'Probar sonido' });
+
+    return actions;
+  }
+
   async handleMessage(message) {
     if (!message || !message.command) {
       return;
     }
 
-    switch (message.command) {
-      case 'runBootstrap':
-        await vscode.commands.executeCommand('agent.runBootstrap');
-        this.postState();
-        break;
-      case 'runSeleniumExport':
-        await vscode.commands.executeCommand('agent.runSeleniumExport');
-        this.postState();
-        break;
-      case 'runDeptrac':
-        await vscode.commands.executeCommand('agent.runDeptrac');
-        this.postState();
-        break;
+    const { command, args } = message;
+
+    switch (command) {
       case 'openConfigurator':
         await vscode.commands.executeCommand('agent.configure');
         break;
@@ -844,10 +1165,10 @@ class AgentWorkbenchViewProvider {
         await vscode.commands.executeCommand('agent.dependencies.refresh');
         break;
       case 'openSnippets':
-        await this.openWorkspaceFile(SNIPPET_SOURCE_FILE);
+        await this.openPresetFile(this.presetManager.getSnippetSourceFile(), 'No se definió un archivo de snippets para este preset.');
         break;
       case 'openBootstrapFile':
-        await this.openWorkspaceFile(BOOTSTRAP_SCRIPT);
+        await this.openPresetFile(this.presetManager.getBootstrapScript(), 'No se definió bootstrap para este preset.');
         break;
       case 'openDocs':
         await this.openExtensionFile('README.md');
@@ -858,10 +1179,17 @@ class AgentWorkbenchViewProvider {
       case 'playSound':
         await vscode.commands.executeCommand('agent.doneSound');
         break;
+      case 'choosePreset':
+        await this.showPresetPicker();
+        break;
       case 'refreshState':
         this.postState();
         break;
       default:
+        if (command && typeof command === 'string' && command.startsWith('agent.')) {
+          await vscode.commands.executeCommand(command, ...(Array.isArray(args) ? args : []));
+          this.postState();
+        }
         break;
     }
   }
@@ -887,6 +1215,16 @@ class AgentWorkbenchViewProvider {
     await vscode.window.showTextDocument(doc, { preview: false });
   }
 
+  async openPresetFile(relativePath, missingMessage) {
+    if (!relativePath) {
+      if (missingMessage) {
+        vscode.window.showInformationMessage(missingMessage);
+      }
+      return;
+    }
+    await this.openWorkspaceFile(relativePath);
+  }
+
   async openExtensionFile(relativePath) {
     const absolute = path.join(this.extensionPath, relativePath);
     if (!fs.existsSync(absolute)) {
@@ -895,6 +1233,32 @@ class AgentWorkbenchViewProvider {
     }
     const doc = await vscode.workspace.openTextDocument(absolute);
     await vscode.window.showTextDocument(doc, { preview: false });
+  }
+
+  async showPresetPicker() {
+    const presets = this.presetManager.getPresetChoices();
+    if (!presets.length) {
+      vscode.window.showWarningMessage('No se encontraron presets instalados.');
+      return;
+    }
+
+    const current = this.presetManager.getPresetSummary();
+    const pick = await vscode.window.showQuickPick(
+      presets.map((preset) => ({
+        label: preset.label,
+        description: preset.description,
+        detail: preset.detail,
+        picked: current && current.id === preset.id,
+        presetId: preset.id
+      })),
+      { placeHolder: 'Selecciona el preset a utilizar', matchOnDescription: true }
+    );
+
+    if (pick && pick.presetId) {
+      await this.presetManager.selectPreset(pick.presetId);
+      vscode.window.showInformationMessage(`Preset activo: ${pick.label}`);
+      this.postState();
+    }
   }
 
   getHtmlForWebview(webview) {
@@ -936,6 +1300,26 @@ class AgentWorkbenchViewProvider {
               width: 20px;
               height: 20px;
             }
+            header .title {
+              display: flex;
+              flex-direction: column;
+              gap: 2px;
+            }
+            header .title span:first-child {
+              font-size: 11px;
+            }
+            header .title span:last-child {
+              font-size: 10px;
+              text-transform: none;
+              letter-spacing: 0.02em;
+              color: var(--vscode-descriptionForeground);
+            }
+            .preset-description {
+              margin-top: -12px;
+              margin-bottom: 16px;
+              color: var(--vscode-descriptionForeground);
+              font-size: 12px;
+            }
             .status-grid {
               display: grid;
               grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -965,6 +1349,10 @@ class AgentWorkbenchViewProvider {
             .status-value.missing {
               color: var(--vscode-editorWarning-foreground);
             }
+            .status-detail {
+              font-size: 11px;
+              color: var(--vscode-descriptionForeground);
+            }
             .actions {
               display: flex;
               flex-direction: column;
@@ -987,6 +1375,10 @@ class AgentWorkbenchViewProvider {
             button.primary {
               background: var(--vscode-button-background);
               color: var(--vscode-button-foreground);
+            }
+            button:disabled {
+              opacity: 0.5;
+              cursor: default;
             }
             button:hover {
               filter: brightness(1.05);
@@ -1015,52 +1407,16 @@ class AgentWorkbenchViewProvider {
         <body>
           <header>
             <img src="${iconUri}" alt="Agent icon" />
-            <span>Agent Toolkit</span>
+            <div class="title">
+              <span>Agent Toolkit</span>
+              <span id="preset-name">Cargando preset…</span>
+            </div>
           </header>
-          <section class="status-grid">
-            <div class="status-card">
-              <div class="status-title">Workspace</div>
-              <div id="status-workspace" class="status-value missing">No configurado</div>
-            </div>
-            <div class="status-card">
-              <div class="status-title">bootstrap.sh</div>
-              <div id="status-bootstrap" class="status-value missing">Pendiente</div>
-            </div>
-            <div class="status-card">
-              <div class="status-title">Contexto Selenium</div>
-              <div id="status-context" class="status-value missing">Pendiente</div>
-            </div>
-            <div class="status-card">
-              <div class="status-title">Dependencias Composer</div>
-              <div id="status-composer" class="status-value missing">Pendiente</div>
-            </div>
-            <div class="status-card">
-              <div class="status-title">Deptrac</div>
-              <div id="status-deptrac" class="status-value missing">Pendiente</div>
-            </div>
-            <div class="status-card">
-              <div class="status-title">Snippets Selenium</div>
-              <div id="status-snippets" class="status-value missing">Pendiente</div>
-            </div>
-            <div class="status-card">
-              <div class="status-title">Sonido</div>
-              <div id="status-sound" class="status-value missing">Sin configurar</div>
-            </div>
-          </section>
+          <p class="preset-description" id="preset-description"></p>
 
-          <section class="actions">
-            <button class="primary" data-command="runBootstrap">Ejecutar ./agent/bootstrap.sh</button>
-            <button data-command="runSeleniumExport">Exportar contexto Selenium</button>
-            <button data-command="runDeptrac">Ejecutar análisis Deptrac</button>
-            <button data-command="openConfigurator">Configurar extensión…</button>
-            <button data-command="openContexts">Abrir contextos</button>
-            <button data-command="openComposer">Abrir dependencias</button>
-            <button data-command="openSnippets">Editar snippets Selenium</button>
-            <button data-command="openBootstrapFile">Abrir bootstrap.sh</button>
-            <button data-command="openDocs">Ver documentación</button>
-            <button data-command="openConfig">Editar config.json</button>
-            <button data-command="playSound">Probar sonido</button>
-          </section>
+          <section class="status-grid" id="status-grid"></section>
+
+          <section class="actions" id="actions-container"></section>
 
           <footer>
             Los botones ejecutan los scripts dentro del workspace configurado. Asegúrate de revisar la terminal “Agent Toolkit”.
@@ -1068,24 +1424,10 @@ class AgentWorkbenchViewProvider {
 
           <script nonce="${nonce}">
             const vscode = acquireVsCodeApi();
-            const statusElements = {
-              workspace: document.getElementById('status-workspace'),
-              bootstrap: document.getElementById('status-bootstrap'),
-              context: document.getElementById('status-context'),
-              composer: document.getElementById('status-composer'),
-              deptrac: document.getElementById('status-deptrac'),
-              snippets: document.getElementById('status-snippets'),
-              sound: document.getElementById('status-sound')
-            };
-
-            function setStatus(element, okText, missingText, condition) {
-              if (!element) {
-                return;
-              }
-              element.textContent = condition ? okText : missingText;
-              element.classList.toggle('ok', condition);
-              element.classList.toggle('missing', !condition);
-            }
+            const statusContainer = document.getElementById('status-grid');
+            const actionsContainer = document.getElementById('actions-container');
+            const presetName = document.getElementById('preset-name');
+            const presetDescription = document.getElementById('preset-description');
 
             window.addEventListener('message', (event) => {
               const message = event.data;
@@ -1094,21 +1436,64 @@ class AgentWorkbenchViewProvider {
               }
 
               const state = message.payload;
-              setStatus(statusElements.workspace, state.workspaceRoot || 'Configurado', 'No configurado', state.hasWorkspace);
-              setStatus(statusElements.bootstrap, 'Disponible', 'Pendiente', state.hasBootstrapScript);
-              setStatus(statusElements.context, 'Generado', 'Pendiente', state.hasSeleniumContext && state.hasSeleniumNotes);
-              setStatus(statusElements.composer, 'Listo', 'Pendiente', state.hasComposerData);
-              setStatus(statusElements.deptrac, 'Listo', 'Pendiente', state.hasDeptracData);
-              setStatus(statusElements.snippets, 'Listo', 'Pendiente', state.snippetSourceExists);
-              setStatus(statusElements.sound, state.soundSummary, state.soundSummary, state.soundReady);
+              renderState(state);
             });
 
-            document.querySelectorAll('button[data-command]').forEach((button) => {
-              button.addEventListener('click', () => {
-                const command = button.getAttribute('data-command');
-                vscode.postMessage({ command });
-              });
-            });
+            function renderState(state) {
+              if (presetName) {
+                presetName.textContent = state.preset ? state.preset.name : 'Preset no definido';
+              }
+              if (presetDescription) {
+                presetDescription.textContent = state.preset && state.preset.description ? state.preset.description : '';
+              }
+
+              if (statusContainer) {
+                statusContainer.innerHTML = '';
+                (state.statuses || []).forEach((status) => {
+                  const card = document.createElement('div');
+                  card.className = 'status-card';
+
+                  const title = document.createElement('div');
+                  title.className = 'status-title';
+                  title.textContent = status.label || 'Estado';
+                  card.appendChild(title);
+
+                  const value = document.createElement('div');
+                  value.className = 'status-value';
+                  value.classList.add(status.ok ? 'ok' : 'missing');
+                  value.textContent = status.ok ? status.okText || 'Listo' : status.failText || 'Pendiente';
+                  card.appendChild(value);
+
+                  if (status.detail) {
+                    const detail = document.createElement('div');
+                    detail.className = 'status-detail';
+                    detail.textContent = status.detail;
+                    card.appendChild(detail);
+                  }
+
+                  statusContainer.appendChild(card);
+                });
+              }
+
+              if (actionsContainer) {
+                actionsContainer.innerHTML = '';
+                (state.actions || []).forEach((action) => {
+                  if (!action || !action.command) {
+                    return;
+                  }
+                  const button = document.createElement('button');
+                  if (action.primary) {
+                    button.classList.add('primary');
+                  }
+                  button.textContent = action.label || action.command;
+                  button.disabled = Boolean(action.disabled);
+                  button.addEventListener('click', () => {
+                    vscode.postMessage({ command: action.command, args: action.args || [] });
+                  });
+                  actionsContainer.appendChild(button);
+                });
+              }
+            }
 
             vscode.postMessage({ command: 'refreshState' });
           </script>
@@ -1118,7 +1503,7 @@ class AgentWorkbenchViewProvider {
   }
 }
 
-async function openConfigurationUI(context) {
+async function openConfigurationUI(context, presetManager, workbenchProvider) {
   const quickPick = vscode.window.createQuickPick();
   quickPick.title = 'Configurar Agent Toolkit';
   quickPick.matchOnDescription = true;
@@ -1133,6 +1518,16 @@ async function openConfigurationUI(context) {
       label: '$(close) Limpiar Workspace Root',
       description: 'Vuelve a usar la carpeta raíz del workspace abierto.',
       action: 'workspaceRootClear'
+    },
+    {
+      label: '$(symbol-structure) Seleccionar preset…',
+      description: 'Cambia el preset activo (plantilla y automatizaciones).',
+      action: 'presetSelect'
+    },
+    {
+      label: '$(debug-continue-small) Usar detección automática de preset',
+      description: 'Limpia el preset fijo y deja que la extensión lo determine.',
+      action: 'presetClear'
     },
     {
       label: '$(file-media) Elegir archivo de sonido…',
@@ -1175,7 +1570,7 @@ async function openConfigurationUI(context) {
     const selected = quickPick.selectedItems[0];
     quickPick.hide();
     if (selected) {
-      await handleConfigurationAction(selected.action, context);
+      await handleConfigurationAction(selected.action, context, presetManager, workbenchProvider);
     }
   });
 
@@ -1183,7 +1578,7 @@ async function openConfigurationUI(context) {
   quickPick.show();
 }
 
-async function handleConfigurationAction(action, context) {
+async function handleConfigurationAction(action, context, presetManager, workbenchProvider) {
   const settings = vscode.workspace.getConfiguration('agentToolkit');
   switch (action) {
     case 'workspaceRoot': {
@@ -1202,6 +1597,21 @@ async function handleConfigurationAction(action, context) {
     case 'workspaceRootClear': {
       await settings.update('workspaceRoot', '', true);
       vscode.window.showInformationMessage('Workspace Root restablecido al valor por defecto.');
+      break;
+    }
+    case 'presetSelect': {
+      if (workbenchProvider && typeof workbenchProvider.showPresetPicker === 'function') {
+        await workbenchProvider.showPresetPicker();
+      } else if (presetManager) {
+        await showPresetQuickPick(presetManager);
+      }
+      break;
+    }
+    case 'presetClear': {
+      if (presetManager) {
+        await presetManager.selectPreset('');
+        vscode.window.showInformationMessage('Preset restablecido; se volverá a detectar automáticamente.');
+      }
       break;
     }
     case 'soundFile': {
@@ -1276,62 +1686,185 @@ async function handleConfigurationAction(action, context) {
   }
 }
 
-async function runBootstrapScript(workspaceRoot, workbenchProvider) {
-  if (!assertWorkspaceRoot(workspaceRoot)) {
+async function showPresetQuickPick(presetManager) {
+  const presets = presetManager ? presetManager.getPresetChoices() : [];
+  if (!presetManager || !presets.length) {
+    vscode.window.showWarningMessage('No se encontraron presets configurados.');
     return;
   }
 
-  const scriptPath = resolveWorkspacePath(workspaceRoot, BOOTSTRAP_SCRIPT);
-  if (!fs.existsSync(scriptPath)) {
-    vscode.window.showWarningMessage('No se encontró ./agent/bootstrap.sh en el workspace actual.');
-    return;
+  const current = presetManager.getPresetSummary();
+  const pick = await vscode.window.showQuickPick(
+    presets.map((preset) => ({
+      label: preset.label,
+      description: preset.description,
+      detail: preset.detail,
+      picked: current && current.id === preset.id,
+      presetId: preset.id
+    })),
+    { placeHolder: 'Selecciona el preset activo', matchOnDescription: true }
+  );
+
+  if (pick && pick.presetId !== undefined) {
+    await presetManager.selectPreset(pick.presetId);
+    vscode.window.showInformationMessage(`Preset activo: ${pick.label}`);
   }
-
-  runCommandsInTerminal(workspaceRoot, ['chmod +x ./agent/bootstrap.sh', './agent/bootstrap.sh'], {
-    announce: 'Ejecutando ./agent/bootstrap.sh en la terminal Agent Toolkit…'
-  });
-
-  refreshWorkbenchSoon(workbenchProvider);
 }
 
-async function runSeleniumExport(workspaceRoot, workbenchProvider) {
+async function runPresetCommand(commandId, workspaceRoot, presetManager, options = {}) {
+  if (!presetManager) {
+    vscode.window.showWarningMessage('No hay gestor de presets disponible.');
+    return;
+  }
+
+  const definition = presetManager.getCommandDefinition(commandId);
+  if (!definition) {
+    vscode.window.showInformationMessage('El preset activo no define esta acción.');
+    return;
+  }
+
   if (!assertWorkspaceRoot(workspaceRoot)) {
     return;
   }
 
-  const scriptPath = resolveWorkspacePath(workspaceRoot, SNIPPET_SOURCE_FILE);
-  if (!fs.existsSync(scriptPath)) {
-    vscode.window.showWarningMessage('No se encontró agent/scripts/export_selenium_context.mjs.');
+  const commands = Array.isArray(definition.commands)
+    ? definition.commands
+    : typeof definition.commands === 'string'
+      ? [definition.commands]
+      : [];
+
+  if (!commands.length) {
+    vscode.window.showWarningMessage('La acción no tiene comandos configurados.');
     return;
   }
 
-  runCommandsInTerminal(workspaceRoot, ['node agent/scripts/export_selenium_context.mjs'], {
-    announce: 'Exportando contexto Selenium…'
+  runCommandsInTerminal(workspaceRoot, commands, {
+    announce: definition.announce,
+    name: definition.terminalName || 'Agent Toolkit'
   });
 
-  refreshWorkbenchSoon(workbenchProvider);
+  if (definition.invalidateSnippets && options.snippetProvider && typeof options.snippetProvider.invalidate === 'function') {
+    options.snippetProvider.invalidate();
+  }
+
+  if (definition.refreshImmediately && options.workbenchProvider && typeof options.workbenchProvider.postState === 'function') {
+    options.workbenchProvider.postState();
+  } else {
+    refreshWorkbenchSoon(options.workbenchProvider);
+  }
 }
 
-async function runDeptracScript(workspaceRoot, workbenchProvider) {
+async function scaffoldAgentDirectory(context, workspaceRoot, presetManager, providers = {}) {
   if (!assertWorkspaceRoot(workspaceRoot)) {
     return;
   }
 
-  const scriptPath = resolveWorkspacePath(workspaceRoot, path.join('agent', 'scripts', 'run_deptrac.sh'));
-  if (!fs.existsSync(scriptPath)) {
-    vscode.window.showWarningMessage('No se encontró agent/scripts/run_deptrac.sh.');
+  const choices = presetManager ? presetManager.getPresetChoices() : [];
+  if (!presetManager || !choices.length) {
+    vscode.window.showErrorMessage('No hay presets disponibles para crear la carpeta agent/.');
     return;
   }
 
-  runCommandsInTerminal(
-    workspaceRoot,
-    ['chmod +x ./agent/scripts/run_deptrac.sh', './agent/scripts/run_deptrac.sh'],
+  const current = presetManager.getPresetSummary();
+  let selectedPreset = choices.length === 1 ? choices[0] : await vscode.window.showQuickPick(
+    choices.map((choice) => ({
+      label: choice.label,
+      description: choice.description,
+      detail: `ID: ${choice.id}`,
+      presetId: choice.id,
+      picked: current && current.id === choice.id
+    })),
     {
-      announce: 'Ejecutando análisis Deptrac…'
+      placeHolder: 'Selecciona la plantilla de agent/ que quieres copiar',
+      matchOnDescription: true
     }
   );
 
-  refreshWorkbenchSoon(workbenchProvider);
+  if (!selectedPreset) {
+    return;
+  }
+
+  if (!selectedPreset.presetId && selectedPreset.id) {
+    selectedPreset = { ...selectedPreset, presetId: selectedPreset.id };
+  }
+
+  const templateRoot = presetManager.getTemplatePath(selectedPreset.presetId);
+  if (!templateRoot || !fs.existsSync(templateRoot)) {
+    vscode.window.showErrorMessage('La plantilla seleccionada no tiene archivos para copiar.');
+    return;
+  }
+
+  const destinationRoot = path.join(workspaceRoot, 'agent');
+
+  let overwriteExisting = false;
+
+  if (fs.existsSync(destinationRoot)) {
+    const choice = await vscode.window.showWarningMessage(
+      'Ya existe una carpeta agent/. ¿Cómo quieres proceder?',
+      { modal: true },
+      'Actualizar archivos faltantes',
+      'Sobrescribir con plantilla',
+      'Cancelar'
+    );
+
+    if (!choice || choice === 'Cancelar') {
+      return;
+    }
+
+    overwriteExisting = choice === 'Sobrescribir con plantilla';
+  } else {
+    await fsp.mkdir(destinationRoot, { recursive: true });
+  }
+
+  const summary = { created: 0, updated: 0, skipped: 0 };
+  await copyDirectory(templateRoot, destinationRoot, { overwriteExisting, summary });
+
+  const parts = [];
+  if (summary.created) {
+    parts.push(`${summary.created} nuevos`);
+  }
+  if (summary.updated) {
+    parts.push(`${summary.updated} actualizados`);
+  }
+  if (!parts.length) {
+    parts.push('Sin cambios');
+  }
+
+  const presetLabel = selectedPreset.label || selectedPreset.presetId;
+  vscode.window.showInformationMessage(`Estructura agent lista (${parts.join(', ')}) • Preset: ${presetLabel}`);
+
+  if (presetManager) {
+    await presetManager.selectPreset(selectedPreset.presetId);
+  }
+
+  if (providers.workbenchProvider && typeof providers.workbenchProvider.resetWatchers === 'function') {
+    providers.workbenchProvider.resetWatchers();
+  }
+  if (providers.workbenchProvider && typeof providers.workbenchProvider.postState === 'function') {
+    providers.workbenchProvider.postState();
+  }
+  if (providers.workbenchProvider && typeof providers.workbenchProvider.scheduleDoneSound === 'function') {
+    providers.workbenchProvider.scheduleDoneSound();
+  }
+
+  if (providers.contextProvider && typeof providers.contextProvider.setWorkspaceRoot === 'function') {
+    providers.contextProvider.setWorkspaceRoot(workspaceRoot);
+  }
+
+  if (providers.composerProvider && typeof providers.composerProvider.setWorkspaceRoot === 'function') {
+    providers.composerProvider.setWorkspaceRoot(workspaceRoot);
+    if (typeof providers.composerProvider.refresh === 'function') {
+      providers.composerProvider.refresh();
+    }
+  }
+
+  if (providers.snippetProvider && typeof providers.snippetProvider.setWorkspaceRoot === 'function') {
+    providers.snippetProvider.setWorkspaceRoot(workspaceRoot);
+  }
+
+  if (providers.deptracDiagnostics && typeof providers.deptracDiagnostics.setWorkspaceRoot === 'function') {
+    providers.deptracDiagnostics.setWorkspaceRoot(workspaceRoot);
+  }
 }
 
 function refreshWorkbenchSoon(workbenchProvider) {
@@ -1384,6 +1917,71 @@ function resolveWorkspacePath(workspaceRoot, targetPath) {
     return targetPath;
   }
   return path.join(workspaceRoot, targetPath);
+}
+
+async function copyDirectory(source, destination, options) {
+  await fsp.mkdir(destination, { recursive: true });
+  const entries = await fsp.readdir(source, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const sourcePath = path.join(source, entry.name);
+    const targetPath = path.join(destination, entry.name);
+
+    if (entry.isDirectory()) {
+      await copyDirectory(sourcePath, targetPath, options);
+      continue;
+    }
+
+    if (entry.isSymbolicLink()) {
+      continue;
+    }
+
+    const targetExists = await pathExists(targetPath);
+    if (targetExists && !options.overwriteExisting) {
+      options.summary.skipped += 1;
+      continue;
+    }
+
+    await fsp.copyFile(sourcePath, targetPath);
+    await ensureExecutable(targetPath);
+
+    if (targetExists) {
+      options.summary.updated += 1;
+    } else {
+      options.summary.created += 1;
+    }
+  }
+}
+
+async function pathExists(filePath) {
+  try {
+    await fsp.access(filePath);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function ensureExecutable(filePath) {
+  if (!shouldMakeExecutable(filePath)) {
+    return;
+  }
+
+  try {
+    await fsp.chmod(filePath, 0o755);
+  } catch (error) {
+    console.warn(`No se pudieron ajustar permisos en ${filePath}: ${error.message}`);
+  }
+}
+
+function shouldMakeExecutable(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.sh' || ext === '.mjs') {
+    return true;
+  }
+
+  const executableNames = new Set(['init.sh']);
+  return executableNames.has(path.basename(filePath));
 }
 
 function registerDoneSound(context) {
