@@ -1,18 +1,18 @@
 version: 1
 project:
-  name: html
+  name: PLACEHOLDER
   root: .
 context:
-  seed:
-    - exports/project_manifest.json
-    - exports/composer_deps.json
-    - exports/npm_deps.json
-    - exports/routes.json
-    - exports/laravel_map.json
+  seed: []
   exclude: ["vendor/**","node_modules/**","storage/logs/**",".git/**"]
 budgets:
   max_context_tokens: 12000
   soft_threshold: 9000
+compaction:
+  on_soft_threshold:
+    summarize_history_to_tokens: 800
+    keep_last_messages: 6
+    drop_tool_outputs_older_than_hours: 6
 memory:
   type: file-notes
   path: agent/notes/AGENT_NOTES.md
