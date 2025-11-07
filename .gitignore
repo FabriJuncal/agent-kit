@@ -2,3 +2,4 @@ agent/exports/
 agent/extensions/**/node_modules/
 agent/extensions/**/*.vsix
 .DS_Store
+agent/custom_actions.json
