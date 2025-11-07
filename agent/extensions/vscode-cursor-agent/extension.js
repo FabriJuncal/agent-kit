@@ -6,6 +6,235 @@ const path = require('path');
 const os = require('os');
 
 const PRESETS_ROOT = 'resources/presets';
+const CUSTOM_ACTIONS_FILE = path.join('agent', 'custom_actions.json');
+const DEFAULT_PROMPT_RUNNER = 'cursor agent --prompt "{prompt}"';
+const AI_AGENT_SECRET_PREFIX = 'agentToolkit.aiAgent';
+
+const AI_AGENT_CATALOG = [
+  {
+    id: 'codex',
+    label: 'Codex CLI',
+    description: 'Utiliza la CLI oficial de Codex para enviar prompts.',
+    credentialFields: [
+      {
+        id: 'apiToken',
+        label: 'Token de acceso Codex',
+        placeholder: 'codex_live_xxx',
+        secret: true
+      }
+    ],
+    envMapping: {
+      CODEX_API_KEY: 'apiToken'
+    },
+    defaultRunner: 'codex agent --prompt "{prompt}"'
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI API',
+    description: 'Requiere una API key para usar openai api responses.create.',
+    credentialFields: [
+      {
+        id: 'apiKey',
+        label: 'OPENAI_API_KEY',
+        placeholder: 'sk-xxxx',
+        secret: true
+      }
+    ],
+    envMapping: {
+      OPENAI_API_KEY: 'apiKey'
+    },
+    defaultRunner: 'npx openai responses.create -i "{prompt}"'
+  },
+  {
+    id: 'custom',
+    label: 'Agente personalizado',
+    description: 'Define tu propio proveedor, variable de entorno y runner.',
+    custom: true
+  }
+];
+
+class AiAuthManager {
+  constructor(context) {
+    this.context = context;
+  }
+
+  getProviderById(id) {
+    return AI_AGENT_CATALOG.find((provider) => provider.id === id);
+  }
+
+  getProviderChoices() {
+    return AI_AGENT_CATALOG.map((provider) => ({
+      id: provider.id,
+      label: provider.label,
+      description: provider.description
+    }));
+  }
+
+  getMetadataKey(workspaceRoot) {
+    return `${AI_AGENT_SECRET_PREFIX}:meta:${workspaceRoot || 'global'}`;
+  }
+
+  getSecretKey(workspaceRoot) {
+    return `${AI_AGENT_SECRET_PREFIX}:secret:${workspaceRoot || 'global'}`;
+  }
+
+  async configure(workspaceRoot) {
+    if (!assertWorkspaceRoot(workspaceRoot)) {
+      return null;
+    }
+
+    const pick = await vscode.window.showQuickPick(
+      this.getProviderChoices().map((provider) => ({
+        label: provider.label,
+        description: provider.description,
+        providerId: provider.id
+      })),
+      { placeHolder: 'Selecciona el agente de IA que deseas usar', matchOnDescription: true }
+    );
+
+    if (!pick) {
+      return null;
+    }
+
+    const provider = this.getProviderById(pick.providerId);
+    if (!provider) {
+      vscode.window.showWarningMessage('El agente seleccionado no está disponible.');
+      return null;
+    }
+
+    const metadata = {
+      providerId: provider.id,
+      providerLabel: provider.label,
+      envMapping: provider.envMapping ? { ...provider.envMapping } : {},
+      defaultRunner: provider.defaultRunner || DEFAULT_PROMPT_RUNNER,
+      custom: Boolean(provider.custom)
+    };
+
+    const secretValues = {};
+
+    if (provider.custom) {
+      const customLabel = await vscode.window.showInputBox({
+        prompt: 'Nombre para identificar a tu agente de IA',
+        placeHolder: 'Mi agente corporativo'
+      });
+      if (!customLabel) {
+        return null;
+      }
+      metadata.providerLabel = customLabel;
+
+      const envName = await vscode.window.showInputBox({
+        prompt: 'Nombre de la variable de entorno que recibirá el token',
+        placeHolder: 'AGENT_AI_TOKEN',
+        value: 'AGENT_AI_TOKEN'
+      });
+      if (!envName) {
+        return null;
+      }
+      metadata.envMapping = { [envName.trim()]: 'token' };
+
+      const runner = await vscode.window.showInputBox({
+        prompt: 'Comando predeterminado para enviar prompts',
+        placeHolder: DEFAULT_PROMPT_RUNNER,
+        value: DEFAULT_PROMPT_RUNNER
+      });
+      if (runner) {
+        metadata.defaultRunner = runner.trim();
+      }
+
+      const token = await vscode.window.showInputBox({
+        prompt: 'Token o credencial para tu agente',
+        password: true,
+        placeHolder: 'token-super-secreto'
+      });
+      if (!token) {
+        return null;
+      }
+      secretValues.token = token.trim();
+    } else {
+      for (const field of provider.credentialFields || []) {
+        const value = await vscode.window.showInputBox({
+          prompt: field.label,
+          placeHolder: field.placeholder || '',
+          password: field.secret !== false,
+          ignoreFocusOut: true
+        });
+        if (!value) {
+          return null;
+        }
+        secretValues[field.id] = value.trim();
+      }
+    }
+
+    await this.persistSession(workspaceRoot, metadata, secretValues);
+    return metadata;
+  }
+
+  async clear(workspaceRoot) {
+    await this.context.workspaceState.update(this.getMetadataKey(workspaceRoot), undefined);
+    await this.context.secrets.delete(this.getSecretKey(workspaceRoot));
+  }
+
+  getSummary(workspaceRoot) {
+    const metadata = this.context.workspaceState.get(this.getMetadataKey(workspaceRoot));
+    if (!metadata) {
+      return { connected: false, label: 'Sin agente IA configurado' };
+    }
+    return {
+      connected: true,
+      label: metadata.providerLabel || metadata.providerId,
+      providerId: metadata.providerId
+    };
+  }
+
+  getDefaultRunner(workspaceRoot) {
+    const metadata = this.context.workspaceState.get(this.getMetadataKey(workspaceRoot));
+    return metadata && metadata.defaultRunner ? metadata.defaultRunner : undefined;
+  }
+
+  async getSession(workspaceRoot) {
+    const metadata = this.context.workspaceState.get(this.getMetadataKey(workspaceRoot));
+    if (!metadata) {
+      return null;
+    }
+    const secretKey = this.getSecretKey(workspaceRoot);
+    const stored = await this.context.secrets.get(secretKey);
+    if (!stored) {
+      return null;
+    }
+    let payload;
+    try {
+      payload = JSON.parse(stored);
+    } catch (error) {
+      console.warn('No se pudieron parsear las credenciales de IA', error);
+      return null;
+    }
+    if (!payload || payload.providerId !== metadata.providerId) {
+      return null;
+    }
+
+    const env = {};
+    Object.entries(metadata.envMapping || {}).forEach(([envName, fieldId]) => {
+      const value = payload.values ? payload.values[fieldId] : undefined;
+      if (value) {
+        env[envName] = value;
+      }
+    });
+
+    return {
+      metadata,
+      env,
+      runner: metadata.defaultRunner || DEFAULT_PROMPT_RUNNER
+    };
+  }
+
+  async persistSession(workspaceRoot, metadata, secretValues) {
+    await this.context.workspaceState.update(this.getMetadataKey(workspaceRoot), metadata);
+    await this.context.secrets.store(
+      this.getSecretKey(workspaceRoot),
+      JSON.stringify({ providerId: metadata.providerId, values: secretValues })
+    );
+  }
+}
 
 class PresetManager {
   constructor(context, workspaceRoot) {
@@ -213,17 +442,26 @@ class PresetManager {
 }
 
 let agentTerminal;
+let aiAuthManager;
+let globalWorkbenchProvider;
 
 function activate(context) {
   let currentWorkspaceRoot = resolveWorkspaceRoot();
 
+  aiAuthManager = new AiAuthManager(context);
   const presetManager = new PresetManager(context, currentWorkspaceRoot);
 
   const contextProvider = new AgentContextProvider(currentWorkspaceRoot, presetManager);
   const composerProvider = new ComposerTreeProvider(currentWorkspaceRoot, presetManager);
   const snippetProvider = registerSnippets(context, currentWorkspaceRoot, presetManager);
   const deptracDiagnostics = new DeptracDiagnostics(currentWorkspaceRoot, presetManager);
-  const workbenchProvider = new AgentWorkbenchViewProvider(context, currentWorkspaceRoot, presetManager);
+  const workbenchProvider = new AgentWorkbenchViewProvider(
+    context,
+    currentWorkspaceRoot,
+    presetManager,
+    aiAuthManager
+  );
+  globalWorkbenchProvider = workbenchProvider;
 
   const updateWorkspaceRoot = (newRoot) => {
     currentWorkspaceRoot = newRoot;
@@ -249,7 +487,15 @@ function activate(context) {
       composerProvider.refresh();
       workbenchProvider.postState();
     }),
-    vscode.commands.registerCommand('agent.configure', () => openConfigurationUI(context, presetManager, workbenchProvider)),
+    vscode.commands.registerCommand('agent.configure', () =>
+      openConfigurationUI(context, presetManager, workbenchProvider, aiAuthManager)
+    ),
+    vscode.commands.registerCommand('agent.customActions.configure', () =>
+      configureCustomActions(currentWorkspaceRoot, workbenchProvider, aiAuthManager)
+    ),
+    vscode.commands.registerCommand('agent.ai.configure', () =>
+      configureAiAgent(currentWorkspaceRoot, aiAuthManager, workbenchProvider)
+    ),
     vscode.commands.registerCommand('agent.runBootstrap', () =>
       runPresetCommand('agent.runBootstrap', currentWorkspaceRoot, presetManager, {
         workbenchProvider,
@@ -267,6 +513,9 @@ function activate(context) {
         workbenchProvider,
         snippetProvider
       })
+    ),
+    vscode.commands.registerCommand('agent.runCustomAction', (actionId) =>
+      runCustomAction(currentWorkspaceRoot, actionId, aiAuthManager)
     ),
     vscode.commands.registerCommand('agent.scaffoldAgent', () =>
       scaffoldAgentDirectory(context, currentWorkspaceRoot, presetManager, {
@@ -783,13 +1032,18 @@ function dedent(text) {
 }
 
 class DeptracDiagnostics {
-  constructor(workspaceRoot) {
+  constructor(workspaceRoot, presetManager) {
     this.collection = vscode.languages.createDiagnosticCollection('agentDeptrac');
+    this.presetManager = presetManager;
+    this.presetSubscription = this.presetManager.onDidChangePreset(() => this.handlePresetChanged());
     this.setWorkspaceRoot(workspaceRoot);
   }
 
   dispose() {
     this.disposeWatcher();
+    if (this.presetSubscription) {
+      this.presetSubscription.dispose();
+    }
     this.collection.dispose();
   }
 
@@ -800,16 +1054,20 @@ class DeptracDiagnostics {
   }
 
   getDeptracPath() {
-    if (!this.workspaceRoot) {
-      return DEPTRAC_FILE;
+    const relative = this.presetManager.getDeptracFile();
+    if (!relative) {
+      return undefined;
     }
-    return path.join(this.workspaceRoot, DEPTRAC_FILE);
+    if (!this.workspaceRoot) {
+      return path.isAbsolute(relative) ? relative : path.join('.', relative);
+    }
+    return path.isAbsolute(relative) ? relative : path.join(this.workspaceRoot, relative);
   }
 
   refresh() {
     const deptracPath = this.getDeptracPath();
 
-    if (!fs.existsSync(deptracPath)) {
+    if (!deptracPath || !fs.existsSync(deptracPath)) {
       this.collection.clear();
       return;
     }
@@ -864,8 +1122,10 @@ class DeptracDiagnostics {
   resetWatcher() {
     this.disposeWatcher();
     const deptracPath = this.getDeptracPath();
-    const watcher = watchFile(deptracPath, () => this.refresh());
-    this.watcher = watcher;
+    if (!deptracPath) {
+      return;
+    }
+    this.watcher = watchFile(deptracPath, () => this.refresh());
   }
 
   disposeWatcher() {
@@ -874,15 +1134,21 @@ class DeptracDiagnostics {
     }
     this.watcher = undefined;
   }
+
+  handlePresetChanged() {
+    this.refresh();
+    this.resetWatcher();
+  }
 }
 
 class AgentWorkbenchViewProvider {
-  constructor(context, workspaceRoot, presetManager) {
+  constructor(context, workspaceRoot, presetManager, aiAuthManager) {
     this.context = context;
     this.extensionUri = context.extensionUri;
     this.extensionPath = context.extensionPath;
     this.workspaceRoot = workspaceRoot;
     this.presetManager = presetManager;
+    this.aiAuthManager = aiAuthManager;
     this.watchers = [];
     this.soundTimeout = undefined;
     this.presetSubscription = this.presetManager.onDidChangePreset(() => {
@@ -933,7 +1199,10 @@ class AgentWorkbenchViewProvider {
       return;
     }
 
-    const watchTargets = new Set(this.presetManager.getWatchFiles());
+    const watchTargets = new Set([
+      ...this.presetManager.getWatchFiles(),
+      CUSTOM_ACTIONS_FILE
+    ]);
 
     watchTargets.forEach((relativePath) => {
       const watcher = watchFile(this.resolveWorkspacePath(relativePath), () => this.handleWatchedFile(relativePath));
@@ -986,6 +1255,7 @@ class AgentWorkbenchViewProvider {
     const root = this.workspaceRoot;
     const hasWorkspace = Boolean(root);
     const soundInfo = this.getSoundInfo();
+    const aiSummary = this.aiAuthManager ? this.aiAuthManager.getSummary(this.workspaceRoot) : { connected: false, label: 'Sin agente IA configurado' };
 
     const presetSummary = this.presetManager.getPresetSummary();
     const statuses = [];
@@ -1063,6 +1333,14 @@ class AgentWorkbenchViewProvider {
       failText: soundInfo.label
     });
 
+    statuses.push({
+      id: 'ai-agent',
+      label: 'Agente IA',
+      ok: aiSummary.connected,
+      okText: aiSummary.connected ? aiSummary.label : 'No configurado',
+      failText: aiSummary.label || 'No configurado'
+    });
+
     const actions = this.buildActions({
       hasWorkspace,
       contextCount: contextFiles.length,
@@ -1100,14 +1378,36 @@ class AgentWorkbenchViewProvider {
   buildActions({ hasWorkspace, contextCount, bootstrapScript, composerData, snippetSource }) {
     const actions = [];
     const seen = new Set();
+    const aiSummary = this.aiAuthManager ? this.aiAuthManager.getSummary(this.workspaceRoot) : null;
 
     const pushAction = (action) => {
-      if (!action || !action.command || seen.has(action.command)) {
+      if (!action || !action.command) {
         return;
       }
-      seen.add(action.command);
+      const key = action.key || `${action.command}:${(action.args || []).join('|')}`;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
       actions.push(action);
     };
+
+    pushAction({
+      command: 'selectAiAgent',
+      label: aiSummary && aiSummary.connected
+        ? `Agente IA: ${aiSummary.label}`
+        : 'Configurar agente IA…'
+    });
+
+    const customActions = getCustomActionsSafe(this.workspaceRoot);
+    customActions.forEach((action) => {
+      pushAction({
+        key: `custom:${action.id}`,
+        command: 'agent.runCustomAction',
+        args: [action.id],
+        label: action.label + (action.type === 'prompt' ? ' • IA' : ' • Script')
+      });
+    });
 
     const presetTasks = this.presetManager.getTasks();
     presetTasks.forEach((task) =>
@@ -1137,6 +1437,7 @@ class AgentWorkbenchViewProvider {
       pushAction({ command: 'openBootstrapFile', label: 'Abrir bootstrap' });
     }
 
+    pushAction({ command: 'agent.customActions.configure', label: 'Gestionar botones personalizados…' });
     pushAction({ command: 'openConfigurator', label: 'Configurar extensión…' });
     pushAction({ command: 'openDocs', label: 'Ver documentación' });
     pushAction({ command: 'openConfig', label: 'Editar config.json' });
@@ -1181,6 +1482,9 @@ class AgentWorkbenchViewProvider {
         break;
       case 'choosePreset':
         await this.showPresetPicker();
+        break;
+      case 'selectAiAgent':
+        await vscode.commands.executeCommand('agent.ai.configure');
         break;
       case 'refreshState':
         this.postState();
@@ -1503,7 +1807,7 @@ class AgentWorkbenchViewProvider {
   }
 }
 
-async function openConfigurationUI(context, presetManager, workbenchProvider) {
+async function openConfigurationUI(context, presetManager, workbenchProvider, aiManager) {
   const quickPick = vscode.window.createQuickPick();
   quickPick.title = 'Configurar Agent Toolkit';
   quickPick.matchOnDescription = true;
@@ -1518,6 +1822,21 @@ async function openConfigurationUI(context, presetManager, workbenchProvider) {
       label: '$(close) Limpiar Workspace Root',
       description: 'Vuelve a usar la carpeta raíz del workspace abierto.',
       action: 'workspaceRootClear'
+    },
+    {
+      label: '$(robot) Configurar agente IA…',
+      description: 'Selecciona el proveedor y guarda las credenciales.',
+      action: 'aiConfigure'
+    },
+    {
+      label: '$(debug-restart) Limpiar agente IA',
+      description: 'Elimina las credenciales almacenadas del agente IA.',
+      action: 'aiClear'
+    },
+    {
+      label: '$(list-selection) Gestionar botones personalizados…',
+      description: 'Crea, edita o elimina acciones propias del panel.',
+      action: 'customActions'
     },
     {
       label: '$(symbol-structure) Seleccionar preset…',
@@ -1570,7 +1889,7 @@ async function openConfigurationUI(context, presetManager, workbenchProvider) {
     const selected = quickPick.selectedItems[0];
     quickPick.hide();
     if (selected) {
-      await handleConfigurationAction(selected.action, context, presetManager, workbenchProvider);
+      await handleConfigurationAction(selected.action, context, presetManager, workbenchProvider, aiManager);
     }
   });
 
@@ -1578,8 +1897,12 @@ async function openConfigurationUI(context, presetManager, workbenchProvider) {
   quickPick.show();
 }
 
-async function handleConfigurationAction(action, context, presetManager, workbenchProvider) {
+async function handleConfigurationAction(action, context, presetManager, workbenchProvider, aiManager) {
   const settings = vscode.workspace.getConfiguration('agentToolkit');
+  const workspaceRoot =
+    workbenchProvider && typeof workbenchProvider.getWorkspaceRoot === 'function'
+      ? workbenchProvider.getWorkspaceRoot()
+      : resolveWorkspaceRoot();
   switch (action) {
     case 'workspaceRoot': {
       const result = await vscode.window.showOpenDialog({
@@ -1597,6 +1920,24 @@ async function handleConfigurationAction(action, context, presetManager, workben
     case 'workspaceRootClear': {
       await settings.update('workspaceRoot', '', true);
       vscode.window.showInformationMessage('Workspace Root restablecido al valor por defecto.');
+      break;
+    }
+    case 'aiConfigure': {
+      await configureAiAgent(workspaceRoot, aiManager, workbenchProvider);
+      break;
+    }
+    case 'aiClear': {
+      if (aiManager) {
+        await aiManager.clear(workspaceRoot);
+        vscode.window.showInformationMessage('El agente IA se desconectó correctamente.');
+        if (workbenchProvider && typeof workbenchProvider.postState === 'function') {
+          workbenchProvider.postState();
+        }
+      }
+      break;
+    }
+    case 'customActions': {
+      await configureCustomActions(workspaceRoot, workbenchProvider, aiManager);
       break;
     }
     case 'presetSelect': {
@@ -1867,11 +2208,402 @@ async function scaffoldAgentDirectory(context, workspaceRoot, presetManager, pro
   }
 }
 
+async function configureAiAgent(workspaceRoot, aiManager, workbenchProvider) {
+  if (!aiManager) {
+    vscode.window.showWarningMessage('No hay un gestor de credenciales de IA disponible.');
+    return;
+  }
+
+  const metadata = await aiManager.configure(workspaceRoot);
+  if (metadata) {
+    vscode.window.showInformationMessage(`Agente IA configurado: ${metadata.providerLabel}`);
+    if (workbenchProvider && typeof workbenchProvider.postState === 'function') {
+      workbenchProvider.postState();
+    }
+  }
+}
+
+async function configureCustomActions(workspaceRoot, workbenchProvider, aiManager) {
+  if (!assertWorkspaceRoot(workspaceRoot)) {
+    return;
+  }
+
+  const actions = readCustomActions(workspaceRoot);
+  const pickItems = [
+    ...actions.map((action) => ({
+      label: action.label,
+      description: action.type === 'prompt' ? 'Prompt IA' : 'Script',
+      detail: action.type === 'prompt' ? (action.runner || DEFAULT_PROMPT_RUNNER) : action.scriptPath,
+      action
+    })),
+    {
+      label: '$(add) Crear nuevo botón…',
+      action: null
+    }
+  ];
+
+  const picked = await vscode.window.showQuickPick(pickItems, {
+    placeHolder: 'Selecciona un botón personalizado o crea uno nuevo',
+    matchOnDescription: true
+  });
+
+  if (!picked) {
+    return;
+  }
+
+  if (!picked.action) {
+    const created = await promptCustomActionDetails(workspaceRoot, undefined, aiManager);
+    if (!created) {
+      return;
+    }
+    actions.push(created);
+    await saveCustomActions(workspaceRoot, actions);
+    vscode.window.showInformationMessage(`Botón "${created.label}" creado.`);
+  } else {
+    const action = picked.action;
+    const choice = await vscode.window.showQuickPick(
+      [
+        { label: '$(pencil) Editar', value: 'edit' },
+        { label: '$(trash) Eliminar', value: 'delete' },
+        { label: '$(play) Probar ahora', value: 'run' }
+      ],
+      { placeHolder: `Acción para "${action.label}"` }
+    );
+
+    if (!choice) {
+      return;
+    }
+
+    if (choice.value === 'edit') {
+      const updated = await promptCustomActionDetails(workspaceRoot, action, aiManager);
+      if (!updated) {
+        return;
+      }
+      const index = actions.findIndex((item) => item.id === action.id);
+      actions[index] = updated;
+      await saveCustomActions(workspaceRoot, actions);
+      vscode.window.showInformationMessage(`Botón "${updated.label}" actualizado.`);
+    } else if (choice.value === 'delete') {
+      const confirm = await vscode.window.showWarningMessage(
+        `¿Eliminar el botón "${action.label}"?`,
+        { modal: true },
+        'Eliminar'
+      );
+      if (confirm === 'Eliminar') {
+        const index = actions.findIndex((item) => item.id === action.id);
+        actions.splice(index, 1);
+        await saveCustomActions(workspaceRoot, actions);
+        vscode.window.showInformationMessage(`Botón "${action.label}" eliminado.`);
+      }
+    } else if (choice.value === 'run') {
+      await runCustomAction(workspaceRoot, action.id, aiManager);
+    }
+  }
+
+  if (workbenchProvider && typeof workbenchProvider.postState === 'function') {
+    workbenchProvider.postState();
+  }
+}
+
+async function runCustomAction(workspaceRoot, actionId, aiManager) {
+  if (!assertWorkspaceRoot(workspaceRoot)) {
+    return;
+  }
+
+  const actions = readCustomActions(workspaceRoot);
+  const action = actions.find((item) => item.id === actionId);
+  if (!action) {
+    vscode.window.showWarningMessage('No se encontró el botón personalizado solicitado.');
+    return;
+  }
+
+  if (action.type === 'prompt') {
+    await executePromptAction(workspaceRoot, action, aiManager);
+    return;
+  }
+
+  await executeScriptAction(workspaceRoot, action);
+}
+
 function refreshWorkbenchSoon(workbenchProvider) {
   if (!workbenchProvider || typeof workbenchProvider.postState !== 'function') {
     return;
   }
   setTimeout(() => workbenchProvider.postState(), 500);
+}
+
+async function promptCustomActionDetails(workspaceRoot, existing, aiManager) {
+  const label = await vscode.window.showInputBox({
+    prompt: 'Nombre del botón',
+    placeHolder: 'Deploy staging',
+    value: existing ? existing.label : ''
+  });
+  if (!label) {
+    return undefined;
+  }
+
+  const type = existing
+    ? existing.type
+    : await vscode.window.showQuickPick(
+        [
+          { label: 'Ejecutar script', value: 'script' },
+          { label: 'Enviar prompt IA', value: 'prompt' }
+        ],
+        { placeHolder: 'Seleccione el tipo de botón' }
+      ).then((pick) => (pick ? pick.value : undefined));
+
+  if (!type) {
+    return undefined;
+  }
+
+  if (type === 'script') {
+    const scriptPath = await vscode.window.showInputBox({
+      prompt: 'Comando o ruta del script a ejecutar',
+      placeHolder: './scripts/deploy.sh o npm run build',
+      value: existing ? existing.scriptPath : ''
+    });
+    if (!scriptPath) {
+      return undefined;
+    }
+    return {
+      id: existing ? existing.id : generateCustomActionId(label, workspaceRoot),
+      label,
+      type,
+      scriptPath: scriptPath.trim()
+    };
+  }
+
+  if (aiManager) {
+    let session = await aiManager.getSession(workspaceRoot);
+    if (!session) {
+      const decision = await vscode.window.showWarningMessage(
+        'Necesitas seleccionar un agente de IA antes de crear este botón.',
+        'Configurar agente IA',
+        'Cancelar'
+      );
+      if (decision === 'Configurar agente IA') {
+        const configured = await aiManager.configure(workspaceRoot);
+        if (!configured) {
+          return undefined;
+        }
+        session = await aiManager.getSession(workspaceRoot);
+        if (globalWorkbenchProvider && typeof globalWorkbenchProvider.postState === 'function') {
+          globalWorkbenchProvider.postState();
+        }
+      } else {
+        return undefined;
+      }
+    }
+  }
+
+  const promptText = await vscode.window.showInputBox({
+    prompt: 'Prompt a enviar al agente de IA',
+    placeHolder: 'Describe el estado del sprint…',
+    value: existing ? existing.prompt : ''
+  });
+  if (!promptText) {
+    return undefined;
+  }
+
+  const aiRunnerDefault =
+    (existing && existing.runner) ||
+    (aiManager && aiManager.getDefaultRunner(workspaceRoot)) ||
+    DEFAULT_PROMPT_RUNNER;
+
+  const runner = await vscode.window.showInputBox({
+    prompt: 'Comando que recibirá el prompt (usa {prompt} como placeholder)',
+    placeHolder: DEFAULT_PROMPT_RUNNER,
+    value: aiRunnerDefault
+  });
+  if (!runner) {
+    return undefined;
+  }
+
+  if (isCodexRunner(runner)) {
+    const authenticated = await ensureCodexLogin(workspaceRoot);
+    if (!authenticated) {
+      const choice = await vscode.window.showWarningMessage(
+        'Codex requiere autenticación. Ejecuta "codex auth login" antes de crear este botón.',
+        'Iniciar sesión ahora',
+        'Cancelar'
+      );
+      if (choice === 'Iniciar sesión ahora') {
+        const terminal = getAgentTerminal('Agent Toolkit');
+        terminal.show(true);
+        if (workspaceRoot) {
+          terminal.sendText(`cd "${workspaceRoot}"`, true);
+        }
+        terminal.sendText('codex auth login', true);
+        vscode.window.showInformationMessage('Completa la autenticación en la terminal y vuelve a crear el botón.');
+      }
+      return undefined;
+    }
+  }
+
+  return {
+    id: existing ? existing.id : generateCustomActionId(label, workspaceRoot),
+    label,
+    type,
+    prompt: promptText,
+    runner: runner.trim()
+  };
+}
+
+async function executeScriptAction(workspaceRoot, action) {
+  const command = action.scriptPath;
+  if (!command) {
+    vscode.window.showWarningMessage('El botón no tiene un script configurado.');
+    return;
+  }
+
+  runCommandsInTerminal(workspaceRoot, [command], {
+    announce: `Ejecutando ${action.label}…`,
+    name: 'Agent Toolkit'
+  });
+}
+
+async function executePromptAction(workspaceRoot, action, aiManager) {
+  const promptText = action.prompt;
+  if (!promptText) {
+    vscode.window.showWarningMessage('El botón no tiene un prompt configurado.');
+    return;
+  }
+
+  let aiSession = aiManager ? await aiManager.getSession(workspaceRoot) : null;
+  if (!aiSession && aiManager) {
+    const decision = await vscode.window.showWarningMessage(
+      'No hay un agente IA configurado. Configúralo antes de continuar.',
+      'Configurar agente IA',
+      'Cancelar'
+    );
+    if (decision === 'Configurar agente IA') {
+      const configured = await aiManager.configure(workspaceRoot);
+      if (!configured) {
+        return;
+      }
+      aiSession = await aiManager.getSession(workspaceRoot);
+      if (globalWorkbenchProvider && typeof globalWorkbenchProvider.postState === 'function') {
+        globalWorkbenchProvider.postState();
+      }
+    } else {
+      return;
+    }
+  }
+
+  const runnerTemplate = action.runner || (aiSession && aiSession.runner) || DEFAULT_PROMPT_RUNNER;
+  if (isCodexRunner(runnerTemplate)) {
+    const authenticated = await ensureCodexLogin(workspaceRoot);
+    if (!authenticated) {
+      vscode.window.showWarningMessage('Codex no está autenticado. Ejecuta "codex auth login" y vuelve a intentarlo.');
+      return;
+    }
+  }
+
+  const escapedPrompt = escapePromptForShell(promptText);
+  const commandText = runnerTemplate.includes('{prompt}')
+    ? runnerTemplate.replace(/\{prompt\}/g, escapedPrompt)
+    : `${runnerTemplate} "${escapedPrompt}"`;
+
+  const terminal = getAgentTerminal('Agent Toolkit');
+  terminal.show(true);
+  terminal.sendText(`cd "${workspaceRoot}"`, true);
+  const commandWithCredentials = applyEnvToCommand(commandText, aiSession ? aiSession.env : undefined);
+  terminal.sendText(commandWithCredentials, true);
+  vscode.window.showInformationMessage(`Prompt enviado para "${action.label}".`);
+}
+
+function escapePromptForShell(text) {
+  return text.replace(/"/g, '\\"');
+}
+
+function applyEnvToCommand(command, envVars) {
+  if (!envVars || !Object.keys(envVars).length) {
+    return command;
+  }
+
+  const entries = Object.entries(envVars);
+  if (!entries.length) {
+    return command;
+  }
+
+  if (process.platform === 'win32') {
+    const assignments = entries.map(([key, value]) => `$env:${key}="${escapePowerShell(value)}"`).join('; ');
+    return `${assignments}; ${command}`;
+  }
+
+  const exports = entries.map(([key, value]) => `${key}="${escapePromptForShell(value)}"`).join(' ');
+  return `${exports} ${command}`;
+}
+
+function escapePowerShell(text) {
+  return text.replace(/`/g, '``').replace(/"/g, '`"');
+}
+
+function isCodexRunner(runnerTemplate) {
+  if (!runnerTemplate) {
+    return false;
+  }
+  const normalized = runnerTemplate.trim().toLowerCase();
+  return normalized.startsWith('codex ') || normalized.includes(' codex ');
+}
+
+async function ensureCodexLogin(workspaceRoot) {
+  return new Promise((resolve) => {
+    const child = spawn('codex', ['auth', 'whoami'], {
+      cwd: workspaceRoot || undefined,
+      stdio: 'ignore'
+    });
+
+    child.on('error', () => resolve(false));
+    child.on('close', (code) => resolve(code === 0));
+  });
+}
+
+function getCustomActionsPath(workspaceRoot) {
+  if (!workspaceRoot) {
+    return CUSTOM_ACTIONS_FILE;
+  }
+  return path.join(workspaceRoot, CUSTOM_ACTIONS_FILE);
+}
+
+function readCustomActions(workspaceRoot) {
+  const target = getCustomActionsPath(workspaceRoot);
+  if (!fs.existsSync(target)) {
+    return [];
+  }
+  try {
+    const data = JSON.parse(fs.readFileSync(target, 'utf-8'));
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    vscode.window.showWarningMessage(`No se pudieron leer los botones personalizados: ${error.message}`);
+    return [];
+  }
+}
+
+async function saveCustomActions(workspaceRoot, actions) {
+  const target = getCustomActionsPath(workspaceRoot);
+  await fsp.mkdir(path.dirname(target), { recursive: true });
+  await fsp.writeFile(target, JSON.stringify(actions, null, 2), 'utf-8');
+}
+
+function getCustomActionsSafe(workspaceRoot) {
+  try {
+    return readCustomActions(workspaceRoot);
+  } catch (error) {
+    console.warn('No se pudieron cargar los botones personalizados', error);
+    return [];
+  }
+}
+
+function generateCustomActionId(label, workspaceRoot) {
+  const base = (label || 'custom-action').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'action';
+  const actions = readCustomActions(workspaceRoot);
+  let candidate = base;
+  let suffix = 1;
+  while (actions.some((action) => action.id === candidate)) {
+    candidate = `${base}-${suffix++}`;
+  }
+  return candidate;
 }
 
 function runCommandsInTerminal(workspaceRoot, commands, options = {}) {

@@ -2,7 +2,7 @@
   "name": "agent-context-toolkit",
   "displayName": "Agent Context Toolkit",
   "description": "Utilidades prácticas para Cursor y VSCode que exponen contexto Selenium, dependencias y automatizaciones del repositorio agent-kit.",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "publisher": "fabrijk",
   "engines": {
     "vscode": "^1.90.0"
@@ -19,6 +19,8 @@
     "onCommand:agent.runSeleniumExport",
     "onCommand:agent.runDeptrac",
     "onCommand:agent.scaffoldAgent",
+    "onCommand:agent.customActions.configure",
+    "onCommand:agent.runCustomAction",
     "onView:agentContextView",
     "onView:agentComposerView",
     "onView:agentWorkbenchPanel"
@@ -62,6 +64,14 @@
       {
         "command": "agent.scaffoldAgent",
         "title": "Agent: Crear carpeta agent/"
+      },
+      {
+        "command": "agent.customActions.configure",
+        "title": "Agent: Gestionar botones personalizados"
+      },
+      {
+        "command": "agent.runCustomAction",
+        "title": "Agent: Ejecutar botón personalizado"
       }
     ],
     "viewsContainers": {
