@@ -18,6 +18,7 @@
     "onCommand:agent.runBootstrap",
     "onCommand:agent.runSeleniumExport",
     "onCommand:agent.runDeptrac",
+    "onCommand:agent.runSeleniumModules",
     "onCommand:agent.scaffoldAgent",
     "onCommand:agent.customActions.configure",
     "onCommand:agent.runCustomAction",
@@ -66,12 +67,32 @@
         "title": "Agent: Crear carpeta agent/"
       },
       {
+        "command": "agent.installAgentKit",
+        "title": "Agent: Instalar Agent Kit"
+      },
+      {
+        "command": "agent.reinstallAgentKit",
+        "title": "Agent: Reinstalar Agent Kit"
+      },
+      {
+        "command": "agent.cleanAgentKit",
+        "title": "Agent: Limpiar Agent Kit"
+      },
+      {
         "command": "agent.customActions.configure",
         "title": "Agent: Gestionar botones personalizados"
       },
       {
         "command": "agent.runCustomAction",
         "title": "Agent: Ejecutar botón personalizado"
+      },
+      {
+        "command": "agent.runSeleniumModules",
+        "title": "Agent: Ejecutar tests Selenium"
+      },
+      {
+        "command": "agent.ai.configure",
+        "title": "Agent: Configurar agente IA"
       }
     ],
     "viewsContainers": {

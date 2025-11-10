@@ -3,10 +3,13 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
-const os = require('os');
+const sound = require('./lib/sound');
 
 const PRESETS_ROOT = 'resources/presets';
 const CUSTOM_ACTIONS_FILE = path.join('agent', 'custom_actions.json');
+const SELENIUM_MODULES_FILE = path.join('agent', 'exports', 'selenium_modules.json');
+const SELENIUM_RUNNER = path.join('agent', 'scripts', 'run_selenium_tests.sh');
+const SELENIUM_RUNNER_ASSET = path.join('resources', 'assets', 'run_selenium_tests.sh');
 const DEFAULT_PROMPT_RUNNER = 'cursor agent --prompt "{prompt}"';
 const AI_AGENT_SECRET_PREFIX = 'agentToolkit.aiAgent';
 
@@ -14,19 +17,9 @@ const AI_AGENT_CATALOG = [
   {
     id: 'codex',
     label: 'Codex CLI',
-    description: 'Utiliza la CLI oficial de Codex para enviar prompts.',
-    credentialFields: [
-      {
-        id: 'apiToken',
-        label: 'Token de acceso Codex',
-        placeholder: 'codex_live_xxx',
-        secret: true
-      }
-    ],
-    envMapping: {
-      CODEX_API_KEY: 'apiToken'
-    },
-    defaultRunner: 'codex agent --prompt "{prompt}"'
+    description: 'Utiliza la CLI oficial de Codex (requiere "codex auth login").',
+    requiresCliLogin: true,
+    defaultRunner: 'codex generate -m code-1 --prompt "{prompt}"'
   },
   {
     id: 'openai',
@@ -111,6 +104,14 @@ class AiAuthManager {
     };
 
     const secretValues = {};
+
+    if (provider.requiresCliLogin) {
+      const loggedIn = await ensureCodexSession(workspaceRoot);
+      if (!loggedIn) {
+        vscode.window.showWarningMessage('No se pudo validar la sesión de Codex. Intenta nuevamente.');
+        return null;
+      }
+    }
 
     if (provider.custom) {
       const customLabel = await vscode.window.showInputBox({
@@ -231,7 +232,7 @@ class AiAuthManager {
     await this.context.workspaceState.update(this.getMetadataKey(workspaceRoot), metadata);
     await this.context.secrets.store(
       this.getSecretKey(workspaceRoot),
-      JSON.stringify({ providerId: metadata.providerId, values: secretValues })
+      JSON.stringify({ providerId: metadata.providerId, values: secretValues || {} })
     );
   }
 }
@@ -517,6 +518,43 @@ function activate(context) {
     vscode.commands.registerCommand('agent.runCustomAction', (actionId) =>
       runCustomAction(currentWorkspaceRoot, actionId, aiAuthManager)
     ),
+    vscode.commands.registerCommand('agent.runSeleniumModules', () =>
+      runSeleniumModules(currentWorkspaceRoot)
+    ),
+    vscode.commands.registerCommand('agent.installAgentKit', () =>
+      installAgentKit(context, currentWorkspaceRoot, presetManager, aiAuthManager, {
+        workbenchProvider,
+        contextProvider,
+        composerProvider,
+        snippetProvider,
+        deptracDiagnostics
+      })
+    ),
+    vscode.commands.registerCommand('agent.reinstallAgentKit', () =>
+      installAgentKit(
+        context,
+        currentWorkspaceRoot,
+        presetManager,
+        aiAuthManager,
+        {
+          workbenchProvider,
+          contextProvider,
+          composerProvider,
+          snippetProvider,
+          deptracDiagnostics
+        },
+        { reinstall: true }
+      )
+    ),
+    vscode.commands.registerCommand('agent.cleanAgentKit', () =>
+      cleanAgentKit(currentWorkspaceRoot, {
+        workbenchProvider,
+        contextProvider,
+        composerProvider,
+        snippetProvider,
+        deptracDiagnostics
+      })
+    ),
     vscode.commands.registerCommand('agent.scaffoldAgent', () =>
       scaffoldAgentDirectory(context, currentWorkspaceRoot, presetManager, {
         workbenchProvider,
@@ -540,7 +578,7 @@ function activate(context) {
         }
       }
       if (event.affectsConfiguration('agentToolkit.soundFile') || event.affectsConfiguration('agentToolkit.soundMessage')) {
-        clearSoundConfigCache();
+        sound.clearSoundConfigCache(context.extensionPath);
         workbenchProvider.postState();
       }
     }),
@@ -1151,6 +1189,7 @@ class AgentWorkbenchViewProvider {
     this.aiAuthManager = aiAuthManager;
     this.watchers = [];
     this.soundTimeout = undefined;
+    this.showConfigPanel = false;
     this.presetSubscription = this.presetManager.onDidChangePreset(() => {
       this.resetWatchers();
       this.postState();
@@ -1201,7 +1240,8 @@ class AgentWorkbenchViewProvider {
 
     const watchTargets = new Set([
       ...this.presetManager.getWatchFiles(),
-      CUSTOM_ACTIONS_FILE
+      CUSTOM_ACTIONS_FILE,
+      SELENIUM_MODULES_FILE
     ]);
 
     watchTargets.forEach((relativePath) => {
@@ -1254,6 +1294,11 @@ class AgentWorkbenchViewProvider {
   buildState() {
     const root = this.workspaceRoot;
     const hasWorkspace = Boolean(root);
+    const hasAgent = hasWorkspace && hasAgentStructure(root);
+    if (!hasAgent && this.showConfigPanel) {
+      this.showConfigPanel = false;
+    }
+    const showConfigPanel = hasAgent ? this.showConfigPanel : false;
     const soundInfo = this.getSoundInfo();
     const aiSummary = this.aiAuthManager ? this.aiAuthManager.getSummary(this.workspaceRoot) : { connected: false, label: 'Sin agente IA configurado' };
 
@@ -1267,6 +1312,22 @@ class AgentWorkbenchViewProvider {
       okText: hasWorkspace ? (presetSummary ? presetSummary.name : 'Configurado') : 'Configurado',
       failText: 'No configurado',
       detail: hasWorkspace ? root : ''
+    });
+
+    statuses.push({
+      id: 'ai-agent',
+      label: 'Agente IA',
+      ok: aiSummary.connected,
+      okText: aiSummary.connected ? aiSummary.label : 'No configurado',
+      failText: aiSummary.label || 'No configurado'
+    });
+
+    statuses.push({
+      id: 'agent-kit',
+      label: 'Agent Kit',
+      ok: hasAgent,
+      okText: 'Instalado',
+      failText: 'Instalar pendiente'
     });
 
     const contextFiles = this.presetManager.getContextFiles();
@@ -1333,17 +1394,10 @@ class AgentWorkbenchViewProvider {
       failText: soundInfo.label
     });
 
-    statuses.push({
-      id: 'ai-agent',
-      label: 'Agente IA',
-      ok: aiSummary.connected,
-      okText: aiSummary.connected ? aiSummary.label : 'No configurado',
-      failText: aiSummary.label || 'No configurado'
-    });
-
-    const actions = this.buildActions({
+    const actions = this.buildActions({ hasWorkspace, hasAgent });
+    const configActions = this.buildConfigActions({
       hasWorkspace,
-      contextCount: contextFiles.length,
+      hasAgent,
       bootstrapScript,
       composerData,
       snippetSource
@@ -1351,10 +1405,14 @@ class AgentWorkbenchViewProvider {
 
     return {
       hasWorkspace,
+      hasAgent,
       workspaceRoot: root || '',
       preset: presetSummary,
       statuses,
       actions,
+      configActions,
+      aiSummary,
+      showConfigPanel,
       soundSummary: soundInfo.label,
       soundReady: soundInfo.ready
     };
@@ -1362,7 +1420,11 @@ class AgentWorkbenchViewProvider {
 
   getSoundInfo() {
     try {
-      const config = getSoundConfig(this.context.extensionPath);
+      const config = sound.loadSoundConfig({
+        extensionRoot: this.context.extensionPath,
+        settings: vscode.workspace.getConfiguration('agentToolkit'),
+        warn: (message) => vscode.window.showWarningMessage(message)
+      });
       if (config.soundFile) {
         return { label: 'Personalizado', ready: true };
       }
@@ -1375,10 +1437,9 @@ class AgentWorkbenchViewProvider {
     }
   }
 
-  buildActions({ hasWorkspace, contextCount, bootstrapScript, composerData, snippetSource }) {
+  buildActions({ hasWorkspace, hasAgent }) {
     const actions = [];
     const seen = new Set();
-    const aiSummary = this.aiAuthManager ? this.aiAuthManager.getSummary(this.workspaceRoot) : null;
 
     const pushAction = (action) => {
       if (!action || !action.command) {
@@ -1392,12 +1453,10 @@ class AgentWorkbenchViewProvider {
       actions.push(action);
     };
 
-    pushAction({
-      command: 'selectAiAgent',
-      label: aiSummary && aiSummary.connected
-        ? `Agente IA: ${aiSummary.label}`
-        : 'Configurar agente IA…'
-    });
+    if (!hasWorkspace || !hasAgent) {
+      pushAction({ command: 'agent.installAgentKit', label: 'Instalar Agent Kit', primary: true });
+      return actions;
+    }
 
     const customActions = getCustomActionsSafe(this.workspaceRoot);
     customActions.forEach((action) => {
@@ -1409,39 +1468,41 @@ class AgentWorkbenchViewProvider {
       });
     });
 
-    const presetTasks = this.presetManager.getTasks();
-    presetTasks.forEach((task) =>
-      pushAction({
-        command: task.command,
-        label: task.label,
-        primary: Boolean(task.primary)
-      })
-    );
+    pushAction({ command: 'agent.customActions.configure', label: 'Crear Función' });
+    pushAction({ command: 'agent.runSeleniumModules', label: 'Ejecutar Test Selenium' });
+    pushAction({
+      command: 'toggleConfigPanel',
+      label: this.showConfigPanel ? 'Ocultar configuración' : 'Configuración'
+    });
+    pushAction({ command: 'agent.reinstallAgentKit', label: 'Reinstalar Agent Kit' });
+    pushAction({ command: 'agent.cleanAgentKit', label: 'Limpiar', danger: true });
 
-    pushAction({ command: 'agent.scaffoldAgent', label: 'Crear estructura agent/' });
-    pushAction({ command: 'choosePreset', label: 'Seleccionar preset…' });
+    return actions;
+  }
 
-    if (hasWorkspace && contextCount > 0) {
-      pushAction({ command: 'openContexts', label: 'Abrir contextos' });
+  buildConfigActions({ hasWorkspace, hasAgent, bootstrapScript, composerData, snippetSource }) {
+    if (!hasWorkspace || !hasAgent) {
+      return [];
     }
 
+    const actions = [];
+    const pushAction = (action) => action && actions.push(action);
+
+    pushAction({ command: 'openContexts', label: 'Abrir contextos' });
     if (composerData) {
       pushAction({ command: 'openComposer', label: 'Abrir dependencias' });
     }
-
     if (snippetSource) {
       pushAction({ command: 'openSnippets', label: 'Editar snippets' });
     }
-
     if (bootstrapScript) {
       pushAction({ command: 'openBootstrapFile', label: 'Abrir bootstrap' });
     }
-
-    pushAction({ command: 'agent.customActions.configure', label: 'Gestionar botones personalizados…' });
-    pushAction({ command: 'openConfigurator', label: 'Configurar extensión…' });
-    pushAction({ command: 'openDocs', label: 'Ver documentación' });
+    pushAction({ command: 'openConfigurator', label: 'Configuración de la extensión' });
     pushAction({ command: 'openConfig', label: 'Editar config.json' });
+    pushAction({ command: 'openDocs', label: 'Ver documentación' });
     pushAction({ command: 'playSound', label: 'Probar sonido' });
+    pushAction({ command: 'agent.ai.configure', label: 'Configurar agente IA' });
 
     return actions;
   }
@@ -1479,6 +1540,10 @@ class AgentWorkbenchViewProvider {
         break;
       case 'playSound':
         await vscode.commands.executeCommand('agent.doneSound');
+        break;
+      case 'toggleConfigPanel':
+        this.showConfigPanel = !this.showConfigPanel;
+        this.postState();
         break;
       case 'choosePreset':
         await this.showPresetPicker();
@@ -1628,7 +1693,7 @@ class AgentWorkbenchViewProvider {
               display: grid;
               grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
               gap: 8px;
-              margin-bottom: 16px;
+              margin-bottom: 8px;
             }
             .status-card {
               border: 1px solid var(--vscode-sideBarSectionHeader-border);
@@ -1660,7 +1725,15 @@ class AgentWorkbenchViewProvider {
             .actions {
               display: flex;
               flex-direction: column;
+              gap: 12px;
+            }
+            .action-list {
+              display: flex;
+              flex-direction: column;
               gap: 8px;
+            }
+            .action-list.hidden {
+              display: none;
             }
             button {
               appearance: none;
@@ -1680,12 +1753,20 @@ class AgentWorkbenchViewProvider {
               background: var(--vscode-button-background);
               color: var(--vscode-button-foreground);
             }
+            button.danger {
+              background: var(--vscode-inputValidation-errorBackground);
+              color: var(--vscode-inputValidation-errorForeground);
+            }
             button:disabled {
               opacity: 0.5;
               cursor: default;
             }
             button:hover {
               filter: brightness(1.05);
+            }
+            .no-actions {
+              font-size: 12px;
+              color: var(--vscode-descriptionForeground);
             }
             footer {
               margin-top: 18px;
@@ -1720,7 +1801,10 @@ class AgentWorkbenchViewProvider {
 
           <section class="status-grid" id="status-grid"></section>
 
-          <section class="actions" id="actions-container"></section>
+          <section class="actions">
+            <div id="main-actions" class="action-list"></div>
+            <div id="config-actions" class="action-list hidden"></div>
+          </section>
 
           <footer>
             Los botones ejecutan los scripts dentro del workspace configurado. Asegúrate de revisar la terminal “Agent Toolkit”.
@@ -1729,7 +1813,8 @@ class AgentWorkbenchViewProvider {
           <script nonce="${nonce}">
             const vscode = acquireVsCodeApi();
             const statusContainer = document.getElementById('status-grid');
-            const actionsContainer = document.getElementById('actions-container');
+            const mainActionsContainer = document.getElementById('main-actions');
+            const configActionsContainer = document.getElementById('config-actions');
             const presetName = document.getElementById('preset-name');
             const presetDescription = document.getElementById('preset-description');
 
@@ -1738,9 +1823,7 @@ class AgentWorkbenchViewProvider {
               if (!message || message.type !== 'state') {
                 return;
               }
-
-              const state = message.payload;
-              renderState(state);
+              renderState(message.payload);
             });
 
             function renderState(state) {
@@ -1779,24 +1862,51 @@ class AgentWorkbenchViewProvider {
                 });
               }
 
-              if (actionsContainer) {
-                actionsContainer.innerHTML = '';
-                (state.actions || []).forEach((action) => {
-                  if (!action || !action.command) {
-                    return;
-                  }
-                  const button = document.createElement('button');
-                  if (action.primary) {
-                    button.classList.add('primary');
-                  }
-                  button.textContent = action.label || action.command;
-                  button.disabled = Boolean(action.disabled);
-                  button.addEventListener('click', () => {
-                    vscode.postMessage({ command: action.command, args: action.args || [] });
-                  });
-                  actionsContainer.appendChild(button);
-                });
+              renderActionList(mainActionsContainer, state.actions || [], true);
+              renderActionList(configActionsContainer, state.configActions || [], state.showConfigPanel);
+            }
+
+            function renderActionList(container, actions, visible) {
+              if (!container) {
+                return;
               }
+              container.innerHTML = '';
+              container.classList.toggle('hidden', !visible);
+              if (!visible) {
+                return;
+              }
+              if (!actions.length) {
+                const placeholder = document.createElement('div');
+                placeholder.className = 'no-actions';
+                placeholder.textContent = 'Sin acciones disponibles.';
+                container.appendChild(placeholder);
+                return;
+              }
+              actions.forEach((action) => {
+                const button = createButton(action);
+                if (button) {
+                  container.appendChild(button);
+                }
+              });
+            }
+
+            function createButton(action) {
+              if (!action || !action.command) {
+                return null;
+              }
+              const button = document.createElement('button');
+              if (action.primary) {
+                button.classList.add('primary');
+              }
+              if (action.danger) {
+                button.classList.add('danger');
+              }
+              button.textContent = action.label || action.command;
+              button.disabled = Boolean(action.disabled);
+              button.addEventListener('click', () => {
+                vscode.postMessage({ command: action.command, args: action.args || [] });
+              });
+              return button;
             }
 
             vscode.postMessage({ command: 'refreshState' });
@@ -1967,14 +2077,14 @@ async function handleConfigurationAction(action, context, presetManager, workben
       });
       if (result && result[0]) {
         await settings.update('soundFile', result[0].fsPath, true);
-        clearSoundConfigCache();
+        sound.clearSoundConfigCache(context.extensionPath);
         vscode.window.showInformationMessage('Archivo de sonido actualizado.');
       }
       break;
     }
     case 'soundFileClear': {
       await settings.update('soundFile', '', true);
-      clearSoundConfigCache();
+      sound.clearSoundConfigCache(context.extensionPath);
       vscode.window.showInformationMessage('Se restableció el sonido por defecto.');
       break;
     }
@@ -1987,14 +2097,14 @@ async function handleConfigurationAction(action, context, presetManager, workben
       });
       if (value !== undefined) {
         await settings.update('soundMessage', value, true);
-        clearSoundConfigCache();
+        sound.clearSoundConfigCache(context.extensionPath);
         vscode.window.showInformationMessage('Mensaje actualizado.');
       }
       break;
     }
     case 'soundMessageClear': {
       await settings.update('soundMessage', undefined, true);
-      clearSoundConfigCache();
+      sound.clearSoundConfigCache(context.extensionPath);
       vscode.window.showInformationMessage('Mensaje restablecido.');
       break;
     }
@@ -2097,13 +2207,13 @@ async function runPresetCommand(commandId, workspaceRoot, presetManager, options
 
 async function scaffoldAgentDirectory(context, workspaceRoot, presetManager, providers = {}) {
   if (!assertWorkspaceRoot(workspaceRoot)) {
-    return;
+    return false;
   }
 
   const choices = presetManager ? presetManager.getPresetChoices() : [];
   if (!presetManager || !choices.length) {
     vscode.window.showErrorMessage('No hay presets disponibles para crear la carpeta agent/.');
-    return;
+    return false;
   }
 
   const current = presetManager.getPresetSummary();
@@ -2122,7 +2232,7 @@ async function scaffoldAgentDirectory(context, workspaceRoot, presetManager, pro
   );
 
   if (!selectedPreset) {
-    return;
+    return false;
   }
 
   if (!selectedPreset.presetId && selectedPreset.id) {
@@ -2132,7 +2242,7 @@ async function scaffoldAgentDirectory(context, workspaceRoot, presetManager, pro
   const templateRoot = presetManager.getTemplatePath(selectedPreset.presetId);
   if (!templateRoot || !fs.existsSync(templateRoot)) {
     vscode.window.showErrorMessage('La plantilla seleccionada no tiene archivos para copiar.');
-    return;
+    return false;
   }
 
   const destinationRoot = path.join(workspaceRoot, 'agent');
@@ -2149,7 +2259,7 @@ async function scaffoldAgentDirectory(context, workspaceRoot, presetManager, pro
     );
 
     if (!choice || choice === 'Cancelar') {
-      return;
+      return false;
     }
 
     overwriteExisting = choice === 'Sobrescribir con plantilla';
@@ -2206,6 +2316,8 @@ async function scaffoldAgentDirectory(context, workspaceRoot, presetManager, pro
   if (providers.deptracDiagnostics && typeof providers.deptracDiagnostics.setWorkspaceRoot === 'function') {
     providers.deptracDiagnostics.setWorkspaceRoot(workspaceRoot);
   }
+
+  return true;
 }
 
 async function configureAiAgent(workspaceRoot, aiManager, workbenchProvider) {
@@ -2325,6 +2437,135 @@ async function runCustomAction(workspaceRoot, actionId, aiManager) {
   await executeScriptAction(workspaceRoot, action);
 }
 
+async function runSeleniumModules(workspaceRoot) {
+  if (!assertWorkspaceRoot(workspaceRoot)) {
+    return;
+  }
+
+  if (!hasAgentStructure(workspaceRoot)) {
+    vscode.window.showWarningMessage('Primero instala Agent Kit para ejecutar las pruebas Selenium.');
+    return;
+  }
+
+  const modules = readSeleniumModules(workspaceRoot);
+  if (!modules.length) {
+    vscode.window.showWarningMessage('No se encontraron módulos en agent/exports/selenium_modules.json.');
+    return;
+  }
+
+  const picks = await vscode.window.showQuickPick(
+    modules.map((module) => ({
+      label: module.name || module.id,
+      description: module.description || module.testPath || '',
+      detail: module.testPath || '',
+      moduleId: module.id
+    })),
+    {
+      canPickMany: true,
+      placeHolder: 'Selecciona los módulos Selenium a ejecutar'
+    }
+  );
+
+  if (!picks || picks.length === 0) {
+    return;
+  }
+
+  const selectedIds = picks.map((pick) => pick.moduleId).filter(Boolean);
+  if (!selectedIds.length) {
+    vscode.window.showWarningMessage('No se seleccionó ningún módulo válido.');
+    return;
+  }
+
+  const runnerPath = path.join(workspaceRoot, SELENIUM_RUNNER);
+  if (!fs.existsSync(runnerPath)) {
+    vscode.window.showWarningMessage('No se encontró agent/scripts/run_selenium_tests.sh.');
+    return;
+  }
+
+  const modulesParam = selectedIds.join(',');
+  runCommandsInTerminal(
+    workspaceRoot,
+    [`chmod +x ${SELENIUM_RUNNER}`, `${SELENIUM_RUNNER} --modules ${modulesParam}`],
+    { announce: `Ejecutando módulos Selenium (${modulesParam})…` }
+  );
+}
+
+async function installAgentKit(
+  context,
+  workspaceRoot,
+  presetManager,
+  aiManager,
+  providers,
+  options = {}
+) {
+  if (!assertWorkspaceRoot(workspaceRoot)) {
+    return;
+  }
+
+  if (options.reinstall) {
+    await removeAgentStructure(workspaceRoot);
+  }
+
+  const success = await scaffoldAgentDirectory(context, workspaceRoot, presetManager, providers);
+  if (!success) {
+    return;
+  }
+
+  await ensureSeleniumRunner(workspaceRoot, context.extensionPath);
+  await ensureSeleniumModulesFile(workspaceRoot);
+  await runPresetCommandIfAvailable('agent.runBootstrap', workspaceRoot, presetManager, providers);
+  await runPresetCommandIfAvailable('agent.runSeleniumExport', workspaceRoot, presetManager, providers);
+  await runPresetCommandIfAvailable('agent.runDeptrac', workspaceRoot, presetManager, providers);
+
+  if (providers.workbenchProvider && typeof providers.workbenchProvider.resetWatchers === 'function') {
+    providers.workbenchProvider.resetWatchers();
+  }
+  refreshWorkbenchSoon(providers.workbenchProvider);
+}
+
+async function cleanAgentKit(workspaceRoot, providers) {
+  if (!assertWorkspaceRoot(workspaceRoot)) {
+    return;
+  }
+
+  await removeAgentStructure(workspaceRoot);
+  vscode.window.showInformationMessage('Se eliminó la carpeta agent/.');
+  if (providers && providers.workbenchProvider) {
+    if (typeof providers.workbenchProvider.resetWatchers === 'function') {
+      providers.workbenchProvider.resetWatchers();
+    }
+    providers.workbenchProvider.postState();
+  }
+  if (providers && providers.contextProvider && typeof providers.contextProvider.refresh === 'function') {
+    providers.contextProvider.refresh();
+  }
+  if (providers && providers.composerProvider && typeof providers.composerProvider.refresh === 'function') {
+    providers.composerProvider.refresh();
+  }
+  if (providers && providers.snippetProvider && typeof providers.snippetProvider.invalidate === 'function') {
+    providers.snippetProvider.invalidate();
+  }
+}
+
+async function removeAgentStructure(workspaceRoot) {
+  if (!workspaceRoot) {
+    return;
+  }
+  const target = path.join(workspaceRoot, 'agent');
+  try {
+    await fsp.rm(target, { recursive: true, force: true });
+  } catch (error) {
+    vscode.window.showWarningMessage(`No se pudo eliminar agent/: ${error.message}`);
+  }
+}
+
+async function runPresetCommandIfAvailable(commandId, workspaceRoot, presetManager, options) {
+  if (!presetManager || !presetManager.getCommandDefinition(commandId)) {
+    return;
+  }
+  await runPresetCommand(commandId, workspaceRoot, presetManager, options || {});
+}
+
 function refreshWorkbenchSoon(workbenchProvider) {
   if (!workbenchProvider || typeof workbenchProvider.postState !== 'function') {
     return;
@@ -2420,22 +2661,9 @@ async function promptCustomActionDetails(workspaceRoot, existing, aiManager) {
   }
 
   if (isCodexRunner(runner)) {
-    const authenticated = await ensureCodexLogin(workspaceRoot);
+    const authenticated = await ensureCodexSession(workspaceRoot);
     if (!authenticated) {
-      const choice = await vscode.window.showWarningMessage(
-        'Codex requiere autenticación. Ejecuta "codex auth login" antes de crear este botón.',
-        'Iniciar sesión ahora',
-        'Cancelar'
-      );
-      if (choice === 'Iniciar sesión ahora') {
-        const terminal = getAgentTerminal('Agent Toolkit');
-        terminal.show(true);
-        if (workspaceRoot) {
-          terminal.sendText(`cd "${workspaceRoot}"`, true);
-        }
-        terminal.sendText('codex auth login', true);
-        vscode.window.showInformationMessage('Completa la autenticación en la terminal y vuelve a crear el botón.');
-      }
+      vscode.window.showWarningMessage('No se pudo validar la sesión de Codex. Intenta nuevamente luego de iniciar sesión.');
       return undefined;
     }
   }
@@ -2492,9 +2720,9 @@ async function executePromptAction(workspaceRoot, action, aiManager) {
 
   const runnerTemplate = action.runner || (aiSession && aiSession.runner) || DEFAULT_PROMPT_RUNNER;
   if (isCodexRunner(runnerTemplate)) {
-    const authenticated = await ensureCodexLogin(workspaceRoot);
+    const authenticated = await ensureCodexSession(workspaceRoot);
     if (!authenticated) {
-      vscode.window.showWarningMessage('Codex no está autenticado. Ejecuta "codex auth login" y vuelve a intentarlo.');
+      vscode.window.showWarningMessage('Codex no reporta sesión activa. Vuelve a intentarlo después de iniciar sesión.');
       return;
     }
   }
@@ -2559,6 +2787,44 @@ async function ensureCodexLogin(workspaceRoot) {
   });
 }
 
+async function ensureCodexSession(workspaceRoot) {
+  const loggedIn = await ensureCodexLogin(workspaceRoot);
+  if (loggedIn) {
+    return true;
+  }
+  return promptCodexLogin(workspaceRoot);
+}
+
+async function promptCodexLogin(workspaceRoot) {
+  const choice = await vscode.window.showInformationMessage(
+    'Codex CLI no tiene una sesión activa. ¿Deseas ejecutar "codex auth login" ahora?',
+    'Iniciar sesión',
+    'Cancelar'
+  );
+  if (choice !== 'Iniciar sesión') {
+    return false;
+  }
+
+  const terminal = getAgentTerminal('Agent Toolkit');
+  terminal.show(true);
+  if (workspaceRoot) {
+    terminal.sendText(`cd "${workspaceRoot}"`, true);
+  }
+  terminal.sendText('codex auth login', true);
+
+  const confirm = await vscode.window.showInformationMessage(
+    'Completa el login en la terminal y presiona "Listo" para continuar.',
+    { modal: true },
+    'Listo',
+    'Cancelar'
+  );
+  if (confirm !== 'Listo') {
+    return false;
+  }
+
+  return ensureCodexLogin(workspaceRoot);
+}
+
 function getCustomActionsPath(workspaceRoot) {
   if (!workspaceRoot) {
     return CUSTOM_ACTIONS_FILE;
@@ -2604,6 +2870,68 @@ function generateCustomActionId(label, workspaceRoot) {
     candidate = `${base}-${suffix++}`;
   }
   return candidate;
+}
+
+function getSeleniumModulesPath(workspaceRoot) {
+  if (!workspaceRoot) {
+    return SELENIUM_MODULES_FILE;
+  }
+  return path.join(workspaceRoot, SELENIUM_MODULES_FILE);
+}
+
+function readSeleniumModules(workspaceRoot) {
+  const target = getSeleniumModulesPath(workspaceRoot);
+  if (!fs.existsSync(target)) {
+    return [];
+  }
+  try {
+    const data = JSON.parse(fs.readFileSync(target, 'utf-8'));
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    vscode.window.showWarningMessage(`No se pudieron leer los módulos Selenium: ${error.message}`);
+    return [];
+  }
+}
+
+async function ensureSeleniumModulesFile(workspaceRoot) {
+  const target = getSeleniumModulesPath(workspaceRoot);
+  if (fs.existsSync(target)) {
+    return;
+  }
+  await fsp.mkdir(path.dirname(target), { recursive: true });
+  await fsp.writeFile(target, '[]', 'utf-8');
+}
+
+async function ensureSeleniumRunner(workspaceRoot, extensionPath) {
+  if (!workspaceRoot || !extensionPath) {
+    return;
+  }
+  const source = path.join(extensionPath, SELENIUM_RUNNER_ASSET);
+  if (!fs.existsSync(source)) {
+    return;
+  }
+  const target = path.join(workspaceRoot, SELENIUM_RUNNER);
+  try {
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    await fsp.copyFile(source, target);
+    await ensureExecutable(target);
+  } catch (error) {
+    vscode.window.showWarningMessage(`No se pudo preparar run_selenium_tests.sh: ${error.message}`);
+  }
+}
+
+function hasAgentStructure(workspaceRoot) {
+  if (!workspaceRoot) {
+    return false;
+  }
+  const agentRoot = path.join(workspaceRoot, 'agent');
+  if (!fs.existsSync(agentRoot)) {
+    return false;
+  }
+  const bootstrap = path.join(agentRoot, 'bootstrap.sh');
+  const scriptsDir = path.join(agentRoot, 'scripts');
+  const exportsDir = path.join(agentRoot, 'exports');
+  return fs.existsSync(bootstrap) && fs.existsSync(scriptsDir) && fs.existsSync(exportsDir);
 }
 
 function runCommandsInTerminal(workspaceRoot, commands, options = {}) {
@@ -2719,11 +3047,12 @@ function shouldMakeExecutable(filePath) {
 function registerDoneSound(context) {
   const disposable = vscode.commands.registerCommand('agent.doneSound', async () => {
     try {
-      const config = getSoundConfig(context.extensionPath);
-      const soundFile = getSoundFilePath(config.soundFile, context.extensionPath);
-      const message = config.message || '🔔 El agente terminó su trabajo';
-      vscode.window.showInformationMessage(message);
-      await playSound(soundFile);
+      await sound.runDoneSound({
+        extensionRoot: context.extensionPath,
+        settings: vscode.workspace.getConfiguration('agentToolkit'),
+        info: (message) => vscode.window.showInformationMessage(message),
+        warn: (message) => vscode.window.showWarningMessage(message)
+      });
     } catch (e) {
       const errorMessage =
         e && typeof e.message === 'string'
@@ -2734,113 +3063,6 @@ function registerDoneSound(context) {
   });
 
   context.subscriptions.push(disposable);
-}
-
-let cachedSoundConfig = null;
-
-function getSoundConfig(extensionRoot) {
-  if (cachedSoundConfig) {
-    return cachedSoundConfig;
-  }
-
-  const configPath = path.join(extensionRoot, 'config.json');
-  let fileConfig = {};
-
-  if (fs.existsSync(configPath)) {
-    try {
-      fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    } catch (error) {
-      vscode.window.showWarningMessage(`Config de sonido inválida: ${error.message}`);
-    }
-  }
-
-  const settings = vscode.workspace.getConfiguration('agentToolkit');
-  const merged = {
-    soundFile: settings.get('soundFile') || fileConfig.soundFile || '',
-    message: settings.get('soundMessage') || fileConfig.message || '🔔 El agente terminó su trabajo'
-  };
-
-  cachedSoundConfig = merged;
-  return merged;
-}
-
-function clearSoundConfigCache() {
-  cachedSoundConfig = null;
-}
-
-function getSoundFilePath(configuredPath, extensionRoot) {
-  const platform = process.platform;
-  const defaultSound =
-    platform === 'darwin'
-      ? '/System/Library/Sounds/Glass.aiff'
-      : configuredPath;
-
-  const candidate = configuredPath || defaultSound;
-
-  if (!candidate) {
-    throw new Error('No se ha definido un archivo de sonido.');
-  }
-
-  const expanded = candidate.startsWith('~')
-    ? path.join(os.homedir(), candidate.slice(1).replace(/^[\\/]/, ''))
-    : candidate;
-
-  const normalized = path.isAbsolute(expanded)
-    ? expanded
-    : path.join(extensionRoot, expanded);
-
-  if (!fs.existsSync(normalized)) {
-    throw new Error('No se encontró el archivo de sonido configurado.');
-  }
-
-  return normalized;
-}
-
-function playSound(soundFile) {
-  return new Promise((resolve, reject) => {
-    const platform = process.platform;
-    const { command, args } = getPlayerCommand(platform, soundFile);
-
-    if (!command) {
-      reject(new Error('La plataforma actual no es compatible.'));
-      return;
-    }
-
-    const child = spawn(command, args, { stdio: 'ignore' });
-
-    child.once('error', () => {
-      reject(new Error('No se pudo reproducir el sonido.'));
-    });
-
-    child.once('close', (code) => {
-      if (code === 0 || code === null) resolve();
-      else reject(new Error('El reproductor de sonido terminó con errores.'));
-    });
-  });
-}
-
-function getPlayerCommand(platform, soundFile) {
-  if (platform === 'darwin') {
-    return { command: '/usr/bin/afplay', args: [soundFile] };
-  }
-
-  if (platform === 'linux') {
-    return { command: 'paplay', args: [soundFile] };
-  }
-
-  if (platform === 'win32') {
-    const escapedPath = soundFile.replace(/"/g, '""');
-    const script = [
-      '$player = New-Object System.Media.SoundPlayer',
-      `$player.SoundLocation = "${escapedPath}"`,
-      '$player.Load()',
-      '$player.PlaySync()'
-    ].join('; ');
-
-    return { command: 'powershell', args: ['-NoProfile', '-Command', script] };
-  }
-
-  return { command: null, args: [] };
 }
 
 function watchFile(filePath, callback) {
