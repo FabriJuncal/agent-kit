@@ -4,10 +4,12 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const sound = require('./lib/sound');
+const projectScanner = require('./lib/projectScanner');
 
 const PRESETS_ROOT = 'resources/presets';
 const CUSTOM_ACTIONS_FILE = path.join('agent', 'custom_actions.json');
 const SELENIUM_MODULES_FILE = path.join('agent', 'exports', 'selenium_modules.json');
+const PROJECT_METADATA_FILE = projectScanner.PROJECT_METADATA_FILE;
 const SELENIUM_RUNNER = path.join('agent', 'scripts', 'run_selenium_tests.sh');
 const SELENIUM_RUNNER_ASSET = path.join('resources', 'assets', 'run_selenium_tests.sh');
 const DEFAULT_PROMPT_RUNNER = 'cursor agent --prompt "{prompt}"';
@@ -342,18 +344,24 @@ class PresetManager {
     if (!this.workspaceRoot) {
       return undefined;
     }
-
+    const metadata = projectScanner.readMetadata(this.workspaceRoot);
+    if (metadata && metadata.recommendedPreset) {
+      const presetFromMetadata = this.findPresetById(metadata.recommendedPreset);
+      if (presetFromMetadata) {
+        return presetFromMetadata;
+      }
+    }
     return this.presets.find((preset) => this.matchesWorkspace(preset, this.workspaceRoot));
   }
 
   matchesWorkspace(preset, workspaceRoot) {
     const detection = preset.detection || {};
     const requiredFiles = detection.requiredFiles || [];
+    const maxDepth = detection.maxDepth || 3;
 
-    return requiredFiles.every((relativePath) => {
-      const target = path.join(workspaceRoot, relativePath);
-      return fs.existsSync(target);
-    });
+    return requiredFiles.every((relativePath) =>
+      projectScanner.pathMatchesPattern(workspaceRoot, relativePath, { maxDepth })
+    );
   }
 
   findPresetById(id) {
@@ -364,7 +372,11 @@ class PresetManager {
   }
 
   getDefaultPreset() {
-    return this.presets[0];
+    if (!this.presets || !this.presets.length) {
+      return undefined;
+    }
+    const generic = this.presets.find((preset) => preset.id === 'generic');
+    return generic || this.presets[0];
   }
 
   getPreset() {
@@ -490,6 +502,9 @@ function activate(context) {
     }),
     vscode.commands.registerCommand('agent.configure', () =>
       openConfigurationUI(context, presetManager, workbenchProvider, aiAuthManager)
+    ),
+    vscode.commands.registerCommand('agent.scanProject', () =>
+      runProjectScan(currentWorkspaceRoot, presetManager, workbenchProvider)
     ),
     vscode.commands.registerCommand('agent.customActions.configure', () =>
       configureCustomActions(currentWorkspaceRoot, workbenchProvider, aiAuthManager)
@@ -1241,7 +1256,8 @@ class AgentWorkbenchViewProvider {
     const watchTargets = new Set([
       ...this.presetManager.getWatchFiles(),
       CUSTOM_ACTIONS_FILE,
-      SELENIUM_MODULES_FILE
+      SELENIUM_MODULES_FILE,
+      PROJECT_METADATA_FILE
     ]);
 
     watchTargets.forEach((relativePath) => {
@@ -1301,6 +1317,7 @@ class AgentWorkbenchViewProvider {
     const showConfigPanel = hasAgent ? this.showConfigPanel : false;
     const soundInfo = this.getSoundInfo();
     const aiSummary = this.aiAuthManager ? this.aiAuthManager.getSummary(this.workspaceRoot) : { connected: false, label: 'Sin agente IA configurado' };
+    const projectMetadata = projectScanner.readMetadata(root);
 
     const presetSummary = this.presetManager.getPresetSummary();
     const statuses = [];
@@ -1328,6 +1345,15 @@ class AgentWorkbenchViewProvider {
       ok: hasAgent,
       okText: 'Instalado',
       failText: 'Instalar pendiente'
+    });
+
+    statuses.push({
+      id: 'project-scan',
+      label: 'Escaneo',
+      ok: Boolean(projectMetadata),
+      okText: projectMetadata ? formatFrameworkSummary(projectMetadata) : 'Pendiente',
+      failText: 'Pendiente',
+      detail: projectMetadata ? formatScanDetail(projectMetadata) : 'Pulsa “Escanear Proyecto” para detectar el stack.'
     });
 
     const contextFiles = this.presetManager.getContextFiles();
@@ -1400,7 +1426,8 @@ class AgentWorkbenchViewProvider {
       hasAgent,
       bootstrapScript,
       composerData,
-      snippetSource
+      snippetSource,
+      projectMetadataExists: Boolean(projectMetadata)
     });
 
     return {
@@ -1453,7 +1480,17 @@ class AgentWorkbenchViewProvider {
       actions.push(action);
     };
 
-    if (!hasWorkspace || !hasAgent) {
+    if (!hasWorkspace) {
+      return actions;
+    }
+
+    pushAction({
+      command: 'agent.scanProject',
+      label: 'Escanear Proyecto',
+      primary: !hasAgent
+    });
+
+    if (!hasAgent) {
       pushAction({ command: 'agent.installAgentKit', label: 'Instalar Agent Kit', primary: true });
       return actions;
     }
@@ -1480,7 +1517,14 @@ class AgentWorkbenchViewProvider {
     return actions;
   }
 
-  buildConfigActions({ hasWorkspace, hasAgent, bootstrapScript, composerData, snippetSource }) {
+  buildConfigActions({
+    hasWorkspace,
+    hasAgent,
+    bootstrapScript,
+    composerData,
+    snippetSource,
+    projectMetadataExists
+  }) {
     if (!hasWorkspace || !hasAgent) {
       return [];
     }
@@ -1493,10 +1537,13 @@ class AgentWorkbenchViewProvider {
       pushAction({ command: 'openComposer', label: 'Abrir dependencias' });
     }
     if (snippetSource) {
-      pushAction({ command: 'openSnippets', label: 'Editar snippets' });
+    pushAction({ command: 'openSnippets', label: 'Editar snippets' });
     }
     if (bootstrapScript) {
       pushAction({ command: 'openBootstrapFile', label: 'Abrir bootstrap' });
+    }
+    if (projectMetadataExists) {
+      pushAction({ command: 'openProjectMetadata', label: 'Ver metadata del escaneo' });
     }
     pushAction({ command: 'openConfigurator', label: 'Configuración de la extensión' });
     pushAction({ command: 'openConfig', label: 'Editar config.json' });
@@ -1531,6 +1578,9 @@ class AgentWorkbenchViewProvider {
         break;
       case 'openBootstrapFile':
         await this.openPresetFile(this.presetManager.getBootstrapScript(), 'No se definió bootstrap para este preset.');
+        break;
+      case 'openProjectMetadata':
+        await this.openWorkspaceFile(PROJECT_METADATA_FILE);
         break;
       case 'openDocs':
         await this.openExtensionFile('README.md');
@@ -2490,6 +2540,38 @@ async function runSeleniumModules(workspaceRoot) {
   );
 }
 
+async function runProjectScan(workspaceRoot, presetManager, workbenchProvider, options = {}) {
+  if (!assertWorkspaceRoot(workspaceRoot)) {
+    return null;
+  }
+  try {
+    const metadata = await projectScanner.scanWorkspace(workspaceRoot);
+    await projectScanner.writeMetadata(workspaceRoot, metadata);
+    const summary = metadata.frameworks.length
+      ? metadata.frameworks.map((fw) => fw.label).join(', ')
+      : 'Sin frameworks específicos';
+    const recommended = metadata.recommendedPreset;
+    const currentPreset = presetManager.getPresetSummary();
+    if (recommended && (!currentPreset || currentPreset.id !== recommended)) {
+      await presetManager.selectPreset(recommended);
+    }
+    if (!options.silent) {
+      vscode.window.showInformationMessage(
+        `Escaneo completado (${metadata.isMonorepo ? 'Monorepo' : 'Proyecto clásico'}): ${summary}.`
+      );
+    }
+    if (workbenchProvider && typeof workbenchProvider.resetWatchers === 'function') {
+      workbenchProvider.resetWatchers();
+    } else if (workbenchProvider && typeof workbenchProvider.postState === 'function') {
+      workbenchProvider.postState();
+    }
+    return metadata;
+  } catch (error) {
+    vscode.window.showErrorMessage(`No se pudo escanear el proyecto: ${error.message}`);
+    return null;
+  }
+}
+
 async function installAgentKit(
   context,
   workspaceRoot,
@@ -2516,6 +2598,7 @@ async function installAgentKit(
   await runPresetCommandIfAvailable('agent.runBootstrap', workspaceRoot, presetManager, providers);
   await runPresetCommandIfAvailable('agent.runSeleniumExport', workspaceRoot, presetManager, providers);
   await runPresetCommandIfAvailable('agent.runDeptrac', workspaceRoot, presetManager, providers);
+  await runProjectScan(workspaceRoot, presetManager, providers.workbenchProvider, { silent: true });
 
   if (providers.workbenchProvider && typeof providers.workbenchProvider.resetWatchers === 'function') {
     providers.workbenchProvider.resetWatchers();
@@ -2932,6 +3015,28 @@ function hasAgentStructure(workspaceRoot) {
   const scriptsDir = path.join(agentRoot, 'scripts');
   const exportsDir = path.join(agentRoot, 'exports');
   return fs.existsSync(bootstrap) && fs.existsSync(scriptsDir) && fs.existsSync(exportsDir);
+}
+
+function formatFrameworkSummary(metadata) {
+  if (!metadata || !Array.isArray(metadata.frameworks) || metadata.frameworks.length === 0) {
+    return metadata && metadata.recommendedPreset ? metadata.recommendedPreset : 'Pendiente';
+  }
+  return metadata.frameworks.map((framework) => framework.label).join(', ');
+}
+
+function formatScanDetail(metadata) {
+  if (!metadata) {
+    return '';
+  }
+  const detail = [];
+  detail.push(metadata.isMonorepo ? 'Monorepo' : 'Proyecto clásico');
+  if (metadata.recommendedPreset) {
+    detail.push(`Preset sugerido: ${metadata.recommendedPreset}`);
+  }
+  if (metadata.hasDocker) {
+    detail.push('Docker detectado');
+  }
+  return detail.join(' · ');
 }
 
 function runCommandsInTerminal(workspaceRoot, commands, options = {}) {

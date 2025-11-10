@@ -15,6 +15,7 @@
     "onCommand:agent.dependencies.refresh",
     "onCommand:agent.configure",
     "onCommand:agent.doneSound",
+    "onCommand:agent.scanProject",
     "onCommand:agent.runBootstrap",
     "onCommand:agent.runSeleniumExport",
     "onCommand:agent.runDeptrac",
@@ -49,6 +50,10 @@
       {
         "command": "agent.doneSound",
         "title": "Agent: Reproducir sonido de finalización"
+      },
+      {
+        "command": "agent.scanProject",
+        "title": "Agent: Escanear proyecto y actualizar metadata"
       },
       {
         "command": "agent.runBootstrap",
