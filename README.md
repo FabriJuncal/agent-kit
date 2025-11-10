@@ -9,12 +9,32 @@ Una sola extensión para que tu equipo, tus agentes IA y tu editor hablen el mis
 - **Pruebas olvidadas.** Los módulos Selenium quedan listados, con su último estado y con un runner listo para reejecutarlos.
 - **IA sin brújula.** Los agentes (Codex, etc.) reciben instrucciones claras y saben qué comando disparar al final para confirmar que todo quedó listo.
 
-## Cómo lo logra (sin lenguaje técnico)
+## Cómo lo logra
 
 - Detecta si tu proyecto ya tiene la carpeta `agent/`. Si no está, te guía para crearla y prepararla.
 - Ordena cada parte del contexto (overview, dependencias, snippets, diagnósticos) en tarjetas simples dentro de la barra lateral.
 - Muestra botones para tareas comunes (instalar, reinstalar, limpiar, lanzar Selenium, abrir documentación) y permite agregar botones propios.
 - Te recuerda qué preset usas, qué archivos faltan y si el sonido final está configurado.
+- Escanea el repo (botón **Escanear Proyecto** o CLI) para detectar automáticamente proyectos Angular, Ionic, Next.js, React, Laravel, servicios headless, monorepos y repos que solo contienen infraestructura/Docker.
+- Sugiere el preset correcto y guarda la metadata en `agent/exports/project_metadata.json` para que Cursor y los agentes IA trabajen con el mismo mapa mental.
+- Genera resúmenes compactos (`deps_summary.md`, `routes_summary.md`, `signals.json`) para que el contexto use datos digeribles y deje los JSON gigantes como referencia opcional.
+- Usa `agent/notes/AGENT_NOTES.md` como bitácora viva (el escáner Selenium agrega snapshots ahí) para evitar repetir información en cada sesión.
+
+## Stacks compatibles
+
+| Stack | ¿Cómo lo detecta? | Preset sugerido |
+| --- | --- | --- |
+| Angular / Nx | `angular.json` (en raíz o subcarpetas) | `angular` |
+| Ionic / Capacitor | `ionic.config.json` | `ionic` |
+| Next.js | `next.config.js` (o variantes) | `next` |
+| React / Vite | Componentes `src/App.*` o dependencia `react` | `react` |
+| Laravel / Fullstack PHP | `artisan`, `composer.json` con `laravel/framework` | `laravel` |
+| Headless / APIs | `composer.json` o `package.json` sin front-end | `headless` |
+| Solo contenedores | `docker-compose.yml`, `Dockerfile` | `docker` |
+| Selenium + Fullstack | `agent/scripts/export_selenium_context.mjs` ya instalado | `selenium` |
+| Genérico | Sin indicadores específicos | `generic` |
+
+Monorepos con `apps/`, `packages/`, `pnpm-workspace.yaml`, `turbo.json`, etc., quedan marcados como tal en la metadata para que el botón **Instalar Agent Kit** y los agentes IA sepan qué subproyecto tocar.
 
 ---
 
@@ -45,6 +65,12 @@ Una sola extensión para que tu equipo, tus agentes IA y tu editor hablen el mis
 ## Uso diario (todo desde la consola)
 
 > Los agentes IA integrados a Cursor no pueden hacer clic. Por eso cada acción importante tiene su comando equivalente.
+
+0. **Escanear el proyecto (Stack + metadata)**
+   ```bash
+   node agent/scripts/scan_project.mjs --json
+   ```
+   (Actualiza `agent/exports/project_metadata.json`, sugiere el preset ideal y deja constancia de si es monorepo.)
 
 1. **Instalar o reinstalar el kit**
    ```bash
@@ -77,7 +103,8 @@ El panel de la extensión reflejará el resultado de cada comando: estados actua
 
 | Situación | Comandos clave | Resultado visible en el panel |
 | --- | --- | --- |
-| Configurar un workspace nuevo | `./agent/bootstrap.sh` → `node agent/scripts/export_selenium_context.mjs` → `./agent/scripts/run_deptrac.sh` | Tarjetas en verde (instalado), contextos listos y diagnósticos frescos. |
+| Detectar stack y preset antes de instalar | `node agent/scripts/scan_project.mjs` | Metadata actualizada, preset sugerido y botón **Instalar Agent Kit** listo con el stack correcto. |
+| Configurar un workspace nuevo | `node agent/scripts/scan_project.mjs` → `./agent/bootstrap.sh` → `node agent/scripts/export_selenium_context.mjs` → `./agent/scripts/run_deptrac.sh` | Tarjetas en verde (instalado), contextos listos y diagnósticos frescos. |
 | Ejecutar pruebas E2E en lote | `./agent/scripts/run_selenium_tests.sh --modules login,checkout` | Lista Selenium actualizada con `lastStatus`, `lastRun` y mensajes por módulo. |
 | Resetear antes de cambiar de stack | `rm -rf agent` → `node ./play_done_sound.js` (tras reinstalar) | Panel vuelve a mostrar “Instalar Agent Kit” y guía el nuevo preset. |
 | Mantener notas del equipo | Edita `agent/notes/AGENT_NOTES.md` → `node ./play_done_sound.js` | El panel muestra las notas actualizadas y la IA tiene memoria compartida. |
@@ -149,6 +176,7 @@ Con estos prompts, los agentes IA tienen una hoja de ruta clara, se apoyan en lo
 
 ## Consejos finales
 
+- Escanea el proyecto después de clonar o de mover servicios dentro de un monorepo (`node agent/scripts/scan_project.mjs` o el botón **Escanear Proyecto**). Así el panel siempre mostrará los stacks correctos y el preset se actualiza solo.
 - Mantén `node ./play_done_sound.js` a mano: es la señal oficial de que cualquier flujo terminó bien.
 - Si trabajas en un entorno sin interfaz gráfica, instala la extensión igual; el panel se actualizará aunque los comandos se disparen desde la terminal.
 - Versiona la carpeta `agent/` (o al menos `config.yaml`, `system_prompt.md`, `notes/`) para que el contexto viaje con tu repo.
