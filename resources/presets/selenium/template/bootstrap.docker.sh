@@ -35,5 +35,6 @@ docker exec vite sh -lc "[ -f $PROJECT/angular.json ] && node $PROJECT/agent/scr
 # 8) Síntesis + checklist (Node en vite)
 docker exec vite sh -lc "node $PROJECT/agent/scripts/synthesize.mjs"
 docker exec vite sh -lc "node $PROJECT/agent/scripts/checklist.mjs"
+docker exec vite sh -lc "node $PROJECT/agent/scripts/scan_project.mjs || true"
 
 echo '✅ Onboarding completo. Revisá agent/config.yaml, agent/system_prompt.md y agent/exports/*.json'

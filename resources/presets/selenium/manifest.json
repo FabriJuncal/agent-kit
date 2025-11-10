@@ -16,6 +16,11 @@
       "relativePath": "agent/exports/selenium_test_context.md"
     },
     {
+      "label": "\uD83D\uDCDD Notas del agente",
+      "description": "Bit\u00E1cora viva (AGENT_NOTES) con decisiones y formularios clave",
+      "relativePath": "agent/notes/AGENT_NOTES.md"
+    },
+    {
       "label": "\uD83D\uDCDD Notas Selenium Agent",
       "description": "Checklist operativo",
       "relativePath": "agent/notes/selenium-agent.md"
@@ -24,6 +29,11 @@
       "label": "\uD83D\uDCDA Documentaci\u00F3n General",
       "description": "Punto de partida del repositorio",
       "relativePath": "DOCUMENTACION.md"
+    },
+    {
+      "label": "\uD83D\uDDFC\uFE0F Project Metadata",
+      "description": "Resultado del comando Escanear Proyecto",
+      "relativePath": "agent/exports/project_metadata.json"
     }
   ],
   "data": {
@@ -35,10 +45,12 @@
   "watchFiles": [
     "agent/bootstrap.sh",
     "agent/exports/selenium_test_context.md",
+    "agent/notes/AGENT_NOTES.md",
     "agent/notes/selenium-agent.md",
     "agent/exports/composer_deps.json",
     "agent/exports/deptrac_layers.json",
-    "agent/scripts/export_selenium_context.mjs"
+    "agent/scripts/export_selenium_context.mjs",
+    "agent/exports/project_metadata.json"
   ],
   "tasks": [
     {

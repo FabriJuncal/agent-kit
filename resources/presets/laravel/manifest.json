@@ -1,10 +1,13 @@
 {
-  "id": "generic",
-  "name": "Proyecto genérico",
-  "description": "Preset universal con seeds Selenium/metadata para cualquier stack.",
+  "id": "laravel",
+  "name": "Laravel",
+  "description": "Preset para proyectos Laravel / fullstack PHP con exports Selenium enriquecidos.",
   "templateDir": "../selenium/template",
   "detection": {
-    "requiredFiles": []
+    "requiredFiles": [
+      "**/artisan"
+    ],
+    "maxDepth": 3
   },
   "contextFiles": [
     {
@@ -70,13 +73,13 @@
         "chmod +x ./agent/bootstrap.sh",
         "./agent/bootstrap.sh"
       ],
-      "announce": "Ejecutando ./agent/bootstrap.sh en la terminal Agent Toolkit…"
+      "announce": "Ejecutando ./agent/bootstrap.sh en la terminal Agent Toolkit\u2026"
     },
     "agent.runSeleniumExport": {
       "commands": [
         "node agent/scripts/export_selenium_context.mjs"
       ],
-      "announce": "Exportando contexto Selenium…",
+      "announce": "Exportando contexto Selenium\u2026",
       "invalidateSnippets": true
     },
     "agent.runDeptrac": {
@@ -84,7 +87,7 @@
         "chmod +x ./agent/scripts/run_deptrac.sh",
         "./agent/scripts/run_deptrac.sh"
       ],
-      "announce": "Ejecutando análisis Deptrac…"
+      "announce": "Ejecutando an\u00E1lisis Deptrac\u2026"
     }
   },
   "defaultSnippets": [

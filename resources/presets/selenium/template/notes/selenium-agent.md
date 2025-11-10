@@ -52,4 +52,5 @@ El flujo exacto lo determinará la IA al combinar los exports con el análisis d
 
 - Añadir nuevos Page Objects o fixtures al ritmo que crezca la aplicación.
 - Documentar en esta guía cualquier convención adicional (nombres de data-test-id, políticas de limpieza, etc.).
+- Registrar un resumen de cada cambio significativo en `agent/notes/AGENT_NOTES.md` para que la memoria corta del agente no tenga que repetir este contenido.
 - Revisar periódicamente que los campos descritos coincidan con el estado real de la UI tras cada release.

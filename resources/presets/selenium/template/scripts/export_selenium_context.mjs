@@ -5,6 +5,7 @@ import path from 'path';
 const ROOT = process.cwd();
 const outDir = path.join('agent', 'exports');
 const outputPath = path.join(outDir, 'selenium_test_context.md');
+const notesPath = path.join('agent', 'notes', 'AGENT_NOTES.md');
 
 const readJson = (file) => {
     try {
@@ -454,6 +455,34 @@ lines.push('- [ ] Validaciones de permisos / roles.');
 lines.push('- [ ] Accesibilidad básica (tab order, focus).');
 
 fs.writeFileSync(outputPath, lines.join('\n'));
+
+const appendNotes = () => {
+    const totalForms = analyzedViews.reduce((acc, view) => acc + view.forms.length, 0);
+    if (!fs.existsSync(path.dirname(notesPath))) {
+        fs.mkdirSync(path.dirname(notesPath), { recursive: true });
+    }
+    const snippets = [];
+    const timestamp = new Date().toISOString();
+    snippets.push(`\n## Selenium snapshot (${timestamp})`);
+    if (totalForms) {
+        const formSamples = analyzedViews
+            .flatMap((view) => view.forms.map((form) => form.id || form.name || normalizePath(view.file)))
+            .slice(0, 5)
+            .map((name) => `\`${name}\``)
+            .join(', ');
+        snippets.push(`- Formularios auditados: ${totalForms}${formSamples ? ` · ${formSamples}` : ''}`);
+    } else {
+        snippets.push('- No se detectaron formularios en este escaneo.');
+    }
+    if (routeSummary && routeSummary.length) {
+        const topRoutes = routeSummary.slice(0, 5).map((route) => `${route.method} ${route.uri}`);
+        snippets.push(`- Rutas clave: ${topRoutes.join(' · ')}`);
+    }
+    snippets.push('- Detalles ampliados en agent/notes/selenium-agent.md y selenium_test_context.md.');
+    fs.appendFileSync(notesPath, snippets.join('\n') + '\n');
+};
+
+appendNotes();
 
 console.log(JSON.stringify({
     viewsWithForms: analyzedViews.length,
