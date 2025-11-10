@@ -1,3 +1,0 @@
-# Decisions
-# Todos
-# References
