@@ -1,0 +1,54 @@
+{
+  "id": "generic",
+  "name": "Proyecto genérico",
+  "description": "Plantilla liviana para cualquier stack: genera un overview inicial y notas del proyecto.",
+  "templateDir": "template",
+  "detection": {
+    "requiredFiles": [
+      "agent/exports/project_overview.md"
+    ]
+  },
+  "contextFiles": [
+    {
+      "label": "\uD83D\uDCC4 Project Overview",
+      "description": "Resumen generado con bootstrap",
+      "relativePath": "agent/exports/project_overview.md"
+    },
+    {
+      "label": "\uD83D\uDCDD Project Notes",
+      "description": "Notas operativas",
+      "relativePath": "agent/notes/project-notes.md"
+    },
+    {
+      "label": "\uD83D\uDCD6 System Prompt",
+      "description": "Gu\u00EDa base del agente",
+      "relativePath": "agent/system_prompt.md"
+    }
+  ],
+  "data": {
+    "bootstrapScript": "agent/bootstrap.sh"
+  },
+  "watchFiles": [
+    "agent/bootstrap.sh",
+    "agent/exports/project_overview.md",
+    "agent/notes/project-notes.md",
+    "agent/system_prompt.md"
+  ],
+  "tasks": [
+    {
+      "command": "agent.runBootstrap",
+      "label": "Generar overview",
+      "primary": true
+    }
+  ],
+  "commands": {
+    "agent.runBootstrap": {
+      "commands": [
+        "chmod +x ./agent/bootstrap.sh",
+        "./agent/bootstrap.sh"
+      ],
+      "announce": "Generando overview inicial…"
+    }
+  },
+  "defaultSnippets": []
+}
